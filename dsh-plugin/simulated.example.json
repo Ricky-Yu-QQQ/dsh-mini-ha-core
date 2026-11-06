@@ -1,0 +1,13 @@
+{
+  "ha_backend": "simulated",
+  "entities": [
+    {"entity_id":"binary_sensor.living_presence","name":"模拟客厅人在传感器","area":"客厅","local_verified":true,"control_allowed":false},
+    {"entity_id":"sensor.living_illuminance","name":"模拟客厅照度","area":"客厅","local_verified":true,"control_allowed":false},
+    {"entity_id":"light.living","name":"模拟客厅灯","area":"客厅","local_verified":true,"control_allowed":true}
+  ],
+  "simulated_states": [
+    {"entity_id":"binary_sensor.living_presence","state":"off","attributes":{"device_class":"occupancy"}},
+    {"entity_id":"sensor.living_illuminance","state":"5","attributes":{"unit_of_measurement":"lx"}},
+    {"entity_id":"light.living","state":"off","attributes":{"supported_color_modes":["color_temp"],"min_color_temp_kelvin":2200,"max_color_temp_kelvin":6500,"brightness":255,"color_temp_kelvin":4000}}
+  ]
+}

@@ -1,0 +1,5 @@
+- insert:
+    - id: home-assistant
+      name: 'dsh-mini-ha-core-plugin'
+      config:
+        settingsPath: !!js process.env.HOME_ASSISTANT_SETTINGS

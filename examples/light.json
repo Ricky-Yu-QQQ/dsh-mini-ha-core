@@ -1,0 +1,6 @@
+{
+  "host": "192.168.1.10",
+  "expectedDid": 123456789,
+  "token": "REPLACE_WITH_LOCAL_MIIO_TOKEN",
+  "light": "REPLACE_WITH_MIOT_DEVICE_DID"
+}

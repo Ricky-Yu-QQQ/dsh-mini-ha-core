@@ -1,0 +1,9 @@
+.local/
+node_modules/
+bin/
+*.private.*
+*.pem
+*.key
+.env
+.env.*
+.DS_Store

@@ -1,0 +1,55 @@
+{
+  "name": "dsh-mini-ha-core-plugin",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH plugin for local Xiaomi device control and persistent home automation rules",
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "*.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "settings.example.json",
+    "simulated.example.json"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node probe.js",
+    "native": "node native-cli.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.6-alpha.1",
+    "@deepseek-ai/dsh-llm": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-tools": "0.2.2-alpha.2",
+    "@deepseek-ai/schemastery": "3.18.6-alpha.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-agent": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-agent-loop": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-credentials": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-llm-pi-ai": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-session": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-session-projection": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-system-prompt": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-tool-executor-native": "0.2.2-alpha.2"
+  },
+  "overrides": {
+    "zod": "4.6.7"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "ha_backend": "miot_lan",
+  "state": "/absolute/workspace/.local/dsh-state",
+  "miot_lan": {
+    "control_binary": "/absolute/workspace/bin/miot-control",
+    "watch_binary": "/absolute/workspace/bin/mips-watch",
+    "gateway_path": "/absolute/workspace/.local/gateway.json",
+    "identity_path": "/absolute/workspace/.local/enrollment/identity.json"
+  },
+  "entities": [
+    {
+      "entity_id": "light.example",
+      "name": "Example light",
+      "local_verified": true,
+      "control_allowed": true,
+      "actions": ["turn_on", "turn_off", "set_brightness", "set_color_temperature"],
+      "miot_did": "REPLACE_WITH_MIOT_DEVICE_DID",
+      "miot_config_path": "/absolute/workspace/.local/light.json"
+    }
+  ]
+}

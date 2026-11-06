@@ -1,0 +1,17 @@
+{
+  "url": "http://192.168.1.10",
+  "credentials_path": "/absolute/workspace/.local/home-assistant/ha-credentials.private.json",
+  "state": "/absolute/workspace/.local/dsh-home-assistant",
+  "request_timeout_ms": 8000,
+  "action_timeout_ms": 90000,
+  "max_event_age_ms": 60000,
+  "max_queue": 128,
+  "event_types": [],
+  "agent": {"provider": "home-model", "model": "REPLACE_WITH_CONFIGURED_MODEL", "max_tokens": 768, "max_tool_calls": 8},
+  "entities": [
+    {"entity_id": "binary_sensor.room_presence", "name": "房间有人", "local_verified": true, "control_allowed": false},
+    {"entity_id": "sensor.room_illuminance", "name": "房间照度", "local_verified": true, "control_allowed": false},
+    {"entity_id": "light.room", "name": "房间灯", "local_verified": true, "control_allowed": true, "actions": ["turn_on", "turn_off", "set_brightness", "set_color_temperature"]},
+    {"entity_id": "script.evening", "name": "已有晚间逻辑", "local_verified": true, "control_allowed": true, "actions": ["run"]}
+  ]
+}
