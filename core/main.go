@@ -96,7 +96,7 @@ func (r *runner) report(p Property, value json.RawMessage, source string) error 
 	}
 	name := "occupancy"
 	if p.DID == r.config.Light {
-		name = map[int]string{1: "power", 2: "brightness", 3: "kelvin"}[p.PIID]
+		name = r.config.lightField(p)
 	}
 	return r.log("property-change", map[string]any{
 		"property": name, "source": source, "old": old, "new": value, "generation": r.generation})
@@ -124,10 +124,16 @@ func validObservation(v json.RawMessage) bool {
 	return len(v) > 0 && string(v) != "null" && json.Valid(v)
 }
 func (r *runner) watched(p Property) bool {
-	return p.SIID == 2 && (p.DID == r.config.Light && p.PIID >= 1 && p.PIID <= 3 ||
+	return p.SIID == 2 && (r.config.Light != "" && r.config.lightField(p) != "" ||
 		r.config.Presence != "" && p.DID == r.config.Presence && p.PIID == r.config.PresencePiid)
 }
 func (r *runner) sample(p Property) (json.RawMessage, error) {
+	if r.config.Device != "" {
+		if p != r.config.powerProperty() {
+			return nil, errors.New("property outside enrolled power device")
+		}
+		return r.readPower(p)
+	}
 	value, err := r.session.read(p)
 	if err != nil {
 		return nil, err
@@ -175,20 +181,32 @@ func (r *runner) await(p Property, target string, duration time.Duration) error 
 	}
 }
 func (r *runner) update(p Property, value string) error {
-	if err := r.log("write-intent", map[string]any{"piid": p.PIID, "value": json.RawMessage(value), "previous": r.tracker.values[p]}); err != nil {
+	if err := r.log("write-intent", map[string]any{"siid": p.SIID, "piid": p.PIID, "value": json.RawMessage(value), "previous": r.tracker.values[p]}); err != nil {
 		return err
 	}
 	ack, err := r.session.write(p, json.RawMessage(value))
 	if err != nil {
-		return errors.Join(err, r.log("write-unconfirmed", map[string]any{"piid": p.PIID}))
+		return errors.Join(err, r.log("write-unconfirmed", map[string]any{"siid": p.SIID, "piid": p.PIID}))
 	}
-	if err = r.log("write-ack", map[string]any{"piid": p.PIID, "code": ack}); err != nil {
+	if err = r.log("write-ack", map[string]any{"siid": p.SIID, "piid": p.PIID, "code": ack}); err != nil {
 		return err
 	}
 	if err = r.await(p, value, 3*time.Second); err != nil {
 		return err
 	}
-	return r.log("write-confirmed", map[string]any{"piid": p.PIID, "value": json.RawMessage(value), "code": ack})
+	return r.log("write-confirmed", map[string]any{"siid": p.SIID, "piid": p.PIID, "value": json.RawMessage(value), "code": ack})
+}
+
+func (r *runner) readPower(p Property) (json.RawMessage, error) {
+	value, err := r.session.read(p)
+	if err != nil {
+		return nil, err
+	}
+	if !r.config.allowsLightValue(1, value) {
+		return nil, errors.New("invalid boolean power readback")
+	}
+	r.tracker.observe(p, value)
+	return value, nil
 }
 func (r *runner) powerProbe(stop <-chan os.Signal) (result error) {
 	p := Property{r.config.Light, 2, 1}
@@ -297,6 +315,8 @@ func run() (result error) {
 	configFile := flag.String("config", "", "owner-only local configuration")
 	journalFile := flag.String("journal", "", "new JSONL log under .local")
 	expectedLight := flag.String("expected-light", "", "require the enrolled light DID to match")
+	expectedDevice := flag.String("expected-device", "", "require the enrolled power device DID to match")
+	expectedPower := flag.String("expected-power", "", "require the enrolled power SIID/PIID to match")
 	mode := flag.String("mode", "read", "read, watch, set, or power-demo")
 	field := flag.String("property", "", "set: power, brightness or kelvin")
 	value := flag.String("value", "", "set: JSON value")
@@ -307,8 +327,8 @@ func run() (result error) {
 		return errors.New("config and journal are required")
 	}
 	if *journalFile == "-" {
-		if (*mode != "read" && *mode != "set") || *expectedLight == "" {
-			return errors.New("stdout requires read or set and -expected-light")
+		if (*mode != "read" && *mode != "set") || (*expectedLight == "" && *expectedDevice == "") {
+			return errors.New("stdout requires read or set and an expected target")
 		}
 	} else if !strings.Contains(filepath.Clean("/"+*journalFile), "/.local/") {
 		return errors.New("private journal must be under .local")
@@ -322,6 +342,17 @@ func run() (result error) {
 	}
 	if *expectedLight != "" && config.Light != *expectedLight {
 		return errors.New("enrolled light does not match")
+	}
+	if *expectedDevice != config.Device {
+		return errors.New("enrolled device does not match")
+	}
+	if config.Device != "" && *expectedPower != fmt.Sprintf("%d/%d", config.Power.SIID, config.Power.PIID) ||
+		config.Device == "" && *expectedPower != "" {
+		return errors.New("enrolled power property does not match")
+	}
+	if config.Device != "" && (*mode != "read" && *mode != "set" ||
+		*mode == "set" && (*field != "power" || !config.allowsLightValue(1, json.RawMessage(*value)))) {
+		return errors.New("enrolled power device accepts read or a boolean power write")
 	}
 	id, err := newID()
 	if err != nil {
@@ -353,10 +384,21 @@ func run() (result error) {
 	}
 	switch *mode {
 	case "read":
-		fields := map[string]any{}
-		for i, name := range []string{"power", "brightness", "kelvin"} {
-			v, err := r.sample(Property{config.Light, 2, i + 1})
+		if config.Device != "" {
+			p := config.powerProperty()
+			v, err := r.sample(p)
 			if err != nil {
+				return err
+			}
+			return r.log("readback", map[string]any{"power": v, "siid": p.SIID, "piid": p.PIID})
+		}
+		fields := map[string]any{}
+		for _, name := range lightFields {
+			v, err := r.sample(config.lightProperty(name))
+			if err != nil {
+				if config.LightProfile == ftdWifiLight && name != "power" {
+					continue
+				}
 				return err
 			}
 			fields[name] = v
@@ -369,13 +411,11 @@ func run() (result error) {
 		stop := make(chan os.Signal, 1)
 		signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(stop)
-		p := Property{config.Light, 2, 1}
+		p := config.lightProperty("power")
 		switch *field {
 		case "", "power":
-		case "brightness":
-			p.PIID = 2
-		case "kelvin":
-			p.PIID = 3
+		case "brightness", "kelvin":
+			p = config.lightProperty(*field)
 		case "occupancy":
 			p = Property{config.Presence, 2, config.PresencePiid}
 		default:
@@ -386,11 +426,17 @@ func run() (result error) {
 		}
 		return r.watch(p, *duration, stop)
 	case "set":
-		piid := map[string]int{"power": 1, "brightness": 2, "kelvin": 3}[*field]
-		if !allowedLightValue(piid, json.RawMessage(*value)) {
+		if config.Device != "" {
+			p := config.powerProperty()
+			if _, err := r.sample(p); err != nil {
+				return err
+			}
+			return r.update(p, *value)
+		}
+		p := config.lightProperty(*field)
+		if !config.allowsLightValue(p.PIID, json.RawMessage(*value)) {
 			return errors.New("invalid light value")
 		}
-		p := Property{config.Light, 2, piid}
 		if _, err := r.sample(p); err != nil {
 			return err
 		}

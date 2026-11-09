@@ -21,14 +21,56 @@ import (
 )
 
 const rpcTimeout = 2500 * time.Millisecond
+const ftdWifiLight = "ftd-wfilmp"
 
 type Config struct {
-	Host         string
-	ExpectedDid  uint32
-	Token        string
-	Light        string
-	Presence     string
-	PresencePiid int
+	Host          string
+	ExpectedDid   uint32
+	Token         string
+	Light         string
+	LightProfile  string
+	BrightnessMax int
+	KelvinMax     int
+	Device        string
+	Power         *PowerBinding
+	Presence      string
+	PresencePiid  int
+}
+
+type PowerBinding struct {
+	SIID int
+	PIID int
+}
+
+func (c Config) powerProperty() Property {
+	return Property{c.Device, c.Power.SIID, c.Power.PIID}
+}
+
+func (c Config) lightProperty(field string) Property {
+	var piid int
+	switch field {
+	case "power":
+		piid = 1
+	case "brightness":
+		piid = 2
+	case "kelvin":
+		piid = 3
+	}
+	if c.LightProfile == ftdWifiLight && piid > 1 {
+		piid++
+	}
+	return Property{c.Light, 2, piid}
+}
+
+var lightFields = [...]string{"power", "brightness", "kelvin"}
+
+func (c Config) lightField(p Property) string {
+	for _, name := range lightFields {
+		if p == c.lightProperty(name) {
+			return name
+		}
+	}
+	return ""
 }
 
 type Property struct {
@@ -72,8 +114,28 @@ func loadConfig(path string) (Config, error) {
 	ip := net.ParseIP(s.Host)
 	did := regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
 	token, err := hex.DecodeString(s.Token)
+	target := s.Light
+	if s.Device != "" {
+		if s.Light != "" || s.Presence != "" || s.Power == nil ||
+			s.Power.SIID < 1 || s.Power.SIID > 65535 || s.Power.PIID < 1 || s.Power.PIID > 65535 {
+			return s, errors.New("invalid enrolled power property")
+		}
+		target = s.Device
+	} else if s.Power != nil {
+		return s, errors.New("power property requires an enrolled device")
+	}
+	if s.KelvinMax != 0 && (s.Light == "" || s.KelvinMax < 6000 || s.KelvinMax > 6500) {
+		return s, errors.New("invalid enrolled color temperature limit")
+	}
+	if s.BrightnessMax != 0 && (s.Light == "" || s.BrightnessMax < 100 || s.BrightnessMax > 65535) {
+		return s, errors.New("invalid enrolled brightness limit")
+	}
+	if s.LightProfile != "" && (s.LightProfile != ftdWifiLight || s.Light != strconv.FormatUint(uint64(s.ExpectedDid), 10) ||
+		s.Presence != "" || s.BrightnessMax != 0 || s.KelvinMax != 0) {
+		return s, errors.New("invalid direct Wi-Fi light enrollment")
+	}
 	if ip == nil || ip.To4() == nil || !ip.IsPrivate() || s.ExpectedDid == 0 || err != nil || len(token) != 16 ||
-		bytes.Equal(token, make([]byte, 16)) || !did.MatchString(s.Light) ||
+		bytes.Equal(token, make([]byte, 16)) || !did.MatchString(target) ||
 		(s.Presence != "" && (!did.MatchString(s.Presence) || s.Presence == s.Light)) {
 		return s, errors.New("invalid private gateway enrollment")
 	}
@@ -194,9 +256,11 @@ func open(s Config, endpoint *net.UDPAddr, id uint64) (*Session, error) {
 	hello := bytes.Repeat([]byte{255}, 32)
 	binary.BigEndian.PutUint16(hello, 0x2131)
 	binary.BigEndian.PutUint16(hello[2:], 32)
-	copy(hello[16:20], "MDID")
-	binary.BigEndian.PutUint64(hello[20:], id)
-	clear(hello[28:])
+	if s.LightProfile != ftdWifiLight {
+		copy(hello[16:20], "MDID")
+		binary.BigEndian.PutUint64(hello[20:], id)
+		clear(hello[28:])
+	}
 	deadline := time.Now().Add(rpcTimeout)
 	if err = socket.SetDeadline(deadline); err == nil {
 		_, err = socket.Write(hello)
@@ -371,8 +435,8 @@ func propertyReceipt(p Property, data json.RawMessage, write bool) (receipt, err
 	return r, nil
 }
 func (c *Session) write(p Property, value json.RawMessage) (int, error) {
-	if p.DID != c.config.Light || p.SIID != 2 || !allowedLightValue(p.PIID, value) {
-		return -1, errors.New("property outside enrolled light or value range")
+	if !c.config.allowsWrite(p, value) {
+		return -1, errors.New("property outside enrollment or value range")
 	}
 	data, err := c.request("set_properties", []Notification{{Property: p, Value: value}})
 	if err != nil {
@@ -384,7 +448,14 @@ func (c *Session) write(p Property, value json.RawMessage) (int, error) {
 	}
 	return *row.Code, nil
 }
-func allowedLightValue(piid int, value json.RawMessage) bool {
+
+func (c Config) allowsWrite(p Property, value json.RawMessage) bool {
+	if c.Device != "" {
+		return c.Power != nil && p == c.powerProperty() && c.allowsLightValue(1, value)
+	}
+	return p.DID == c.Light && p.SIID == 2 && c.allowsLightValue(p.PIID, value)
+}
+func (c Config) allowsLightValue(piid int, value json.RawMessage) bool {
 	if piid == 1 {
 		return string(value) == "true" || string(value) == "false"
 	}
@@ -392,5 +463,17 @@ func allowedLightValue(piid int, value json.RawMessage) bool {
 	if json.Unmarshal(value, &n) != nil {
 		return false
 	}
-	return piid == 2 && n >= 1 && n <= 100 || piid == 3 && n >= 2700 && n <= 6000
+	kelvinMin, kelvinMax := 2700, c.KelvinMax
+	if kelvinMax == 0 {
+		kelvinMax = 6000
+	}
+	brightnessMax := c.BrightnessMax
+	if brightnessMax == 0 {
+		brightnessMax = 100
+	}
+	if c.LightProfile == ftdWifiLight {
+		kelvinMin, kelvinMax = 3000, 6500
+	}
+	return piid == c.lightProperty("brightness").PIID && n >= 1 && n <= brightnessMax ||
+		piid == c.lightProperty("kelvin").PIID && n >= kelvinMin && n <= kelvinMax
 }

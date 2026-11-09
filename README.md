@@ -11,7 +11,8 @@ and records each command's device acknowledgement and readback.
 | [examples](examples) | Configuration templates with placeholder values |
 
 The local backend supports enrolled lights that expose power, brightness, and
-color temperature in MIoT service 2. Reads and writes use local miIO. Property
+color temperature in MIoT service 2. The control CLI also supports a single
+registered boolean power property on a light or switch. Reads and writes use local miIO. Property
 notifications use the gateway's MIPS MQTT broker. Certificate enrollment and
 renewal use Xiaomi's authorization service. Running the local backend requires
 no Home Assistant server.
@@ -61,6 +62,19 @@ The watcher emits `subscribed` after the gateway acknowledges the subscription
 and `device-property` for a property notification. The control tool requires
 `-apply` for a device write. Keep local tokens, keys, and generated identities
 in `.local`.
+
+For an enrolled switch channel, replace the light and presence fields in the
+private control config with `"device": "DEVICE_DID"` and
+`"power": {"siid": 3, "piid": 1}` using the device's verified property IDs.
+Use `-expected-device DEVICE_DID -expected-power 3/1` in place of
+`-expected-light`. The CLI accepts `-mode read` or a boolean
+`-mode set -property power -apply` for that exact channel.
+
+For power properties exposed only through the local MIPS proxy, use
+`mips-watch power` with the same flags. Its enrollment file contains
+`device`, `power`, and the absolute owner-only `gateway` and `identity`
+JSON paths. It uses the same pinned TLS and exclusive identity lock as the
+watcher. A write is sent once and verified by a fresh property read.
 
 ## Test
 

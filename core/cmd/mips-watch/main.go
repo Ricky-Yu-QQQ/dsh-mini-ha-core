@@ -21,8 +21,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/eclipse/paho.golang/paho"
 	"dsh-mini-ha-core/internal/mipsidentity"
+	"github.com/eclipse/paho.golang/paho"
 )
 
 type gateway struct {
@@ -240,6 +240,24 @@ func watch(ctx context.Context, g gateway, id mipsidentity.Identity, devices []s
 }
 
 func run() error {
+	if len(os.Args) > 1 && os.Args[1] == "power" {
+		return runPower(os.Args[2:])
+	}
+	if len(os.Args) > 1 && os.Args[1] == "motor" {
+		return runMotor(os.Args[2:])
+	}
+	if len(os.Args) > 1 && os.Args[1] == "bed" {
+		return runBed(os.Args[2:])
+	}
+	if len(os.Args) > 1 && os.Args[1] == "presence" {
+		return runPresence(os.Args[2:])
+	}
+	if len(os.Args) > 1 && os.Args[1] == "climate" {
+		return runClimate(os.Args[2:])
+	}
+	if len(os.Args) > 1 && os.Args[1] == "environment" {
+		return runEnvironment(os.Args[2:])
+	}
 	gatewayPath := flag.String("gateway", "", "private JSON with host, port, CA path and SHA256 leaf fingerprint")
 	identityPath := flag.String("identity", "", "private JSON from mips-enroll")
 	device := flag.String("device", "", "comma-separated MIoT device DIDs to watch")

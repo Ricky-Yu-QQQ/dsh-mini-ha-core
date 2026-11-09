@@ -45,6 +45,70 @@ func TestWriteRequiresMatchingReceiptAndReadback(t *testing.T) {
 	}
 }
 
+func TestEnrolledSwitchRejectsOtherRelayChannels(t *testing.T) {
+	config := fixtureConfig
+	config.Light = ""
+	config.Device = "panel"
+	config.Power = &PowerBinding{SIID: 15, PIID: 1}
+	session := Session{config: config}
+	if !config.allowsWrite(Property{"panel", 15, 1}, json.RawMessage("true")) {
+		t.Fatal("enrolled channel rejected")
+	}
+	for _, p := range []Property{{"panel", 14, 1}, {"panel", 15, 2}, {"other", 15, 1}} {
+		if _, err := session.write(p, json.RawMessage("true")); err == nil {
+			t.Fatalf("unregistered property accepted: %+v", p)
+		}
+	}
+	if _, err := session.write(Property{"panel", 15, 1}, json.RawMessage("1")); err == nil {
+		t.Fatal("numeric power value accepted")
+	}
+}
+
+func TestColorTemperatureCeilingAppliesOnlyToEnrolledLight(t *testing.T) {
+	config := fixtureConfig
+	target := Property{"lamp", 2, 3}
+	if config.allowsWrite(target, json.RawMessage("6500")) {
+		t.Fatal("default light must retain its original ceiling")
+	}
+	config.KelvinMax = 6500
+	if !config.allowsWrite(target, json.RawMessage("6500")) ||
+		config.allowsWrite(target, json.RawMessage("6501")) ||
+		config.allowsWrite(Property{"another-light", 2, 3}, json.RawMessage("6500")) {
+		t.Fatal("extended ceiling must apply only to the enrolled light")
+	}
+}
+
+func TestNativeBrightnessRangeAppliesOnlyToEnrolledLight(t *testing.T) {
+	config := fixtureConfig
+	target := Property{"lamp", 2, 2}
+	if config.allowsWrite(target, json.RawMessage("65535")) {
+		t.Fatal("standard light must keep the original brightness range")
+	}
+	config.BrightnessMax = 65535
+	if !config.allowsWrite(target, json.RawMessage("65535")) ||
+		config.allowsWrite(target, json.RawMessage("65536")) ||
+		config.allowsWrite(Property{"another-light", 2, 2}, json.RawMessage("65535")) {
+		t.Fatal("native brightness range must apply only to the enrolled light")
+	}
+}
+
+func TestDirectWifiLightRejectsModeAndOutOfRangeWrites(t *testing.T) {
+	c := Config{Light: "12345", LightProfile: ftdWifiLight}
+	for _, tc := range []struct {
+		piid  int
+		value string
+		allow bool
+	}{
+		{1, "false", true}, {2, "1", false}, {3, "100", true}, {3, "101", false},
+		{4, "2999", false}, {4, "3000", true}, {4, "6500", true}, {4, "6501", false},
+		{5, "true", false},
+	} {
+		if got := c.allowsWrite(Property{c.Light, 2, tc.piid}, json.RawMessage(tc.value)); got != tc.allow {
+			t.Errorf("property 2/%d = %s: allow = %v", tc.piid, tc.value, got)
+		}
+	}
+}
+
 func TestPollFallbackRecoversSocketWithoutPhantomEdge(t *testing.T) {
 	peer, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
