@@ -140,6 +140,7 @@ type powerClient struct {
 	messages <-chan *paho.Publish
 	reply    string
 	mid      uint32
+	proxy    string
 }
 
 func (c *powerClient) request(ctx context.Context, topic string, input any) ([]byte, error) {
@@ -150,6 +151,9 @@ func (c *powerClient) request(ctx context.Context, topic string, input any) ([]b
 		return nil, err
 	}
 	c.mid++
+	if c.proxy != "" {
+		return proxyRequest(ctx, c.proxy, topic, body)
+	}
 	if _, err = c.client.Publish(ctx, &paho.Publish{
 		Topic: "master/" + topic, Payload: powerMessage(c.mid, c.reply, body), QoS: 2,
 	}); err != nil {
@@ -278,6 +282,15 @@ func runPower(args []string) error {
 }
 
 func withMIPSClient(gatewayPath, identityPath string, use func(context.Context, *powerClient) error) error {
+	if proxy := os.Getenv("NOMI_MIPS_SOCKET"); proxy != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		var randomID [4]byte
+		if _, err := rand.Read(randomID[:]); err != nil {
+			return err
+		}
+		return use(ctx, &powerClient{proxy: proxy, mid: binary.LittleEndian.Uint32(randomID[:])})
+	}
 	var g gateway
 	if err := readJSON(gatewayPath, &g); err != nil {
 		return err
@@ -315,7 +328,8 @@ func withMIPSClient(gatewayPath, identityPath string, use func(context.Context, 
 	if _, err = rand.Read(randomID[:]); err != nil {
 		return err
 	}
-	return use(ctx, &powerClient{client, messages, identity.VirtualDID + "/reply", binary.LittleEndian.Uint32(randomID[:])})
+	return use(ctx, &powerClient{client: client, messages: messages,
+		reply: identity.VirtualDID + "/reply", mid: binary.LittleEndian.Uint32(randomID[:])})
 }
 
 func runPowerRequest(ctx context.Context, c *powerClient, config powerConfig, target powerProperty, fields []string, mode, property string, wanted json.RawMessage) error {

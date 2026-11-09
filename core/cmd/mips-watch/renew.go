@@ -12,6 +12,12 @@ import (
 )
 
 func watchWithRenewal(ctx context.Context, g gateway, path string, devices []string, kind string) error {
+	return withRenewal(ctx, path, func(id mipsidentity.Identity, renewed <-chan struct{}) error {
+		return watch(ctx, g, id, devices, kind, renewed)
+	})
+}
+
+func withRenewal(ctx context.Context, path string, use func(mipsidentity.Identity, <-chan struct{}) error) error {
 	id, err := mipsidentity.Load(path)
 	if err != nil {
 		return err
@@ -29,7 +35,7 @@ func watchWithRenewal(ctx context.Context, g gateway, path string, devices []str
 	}
 	if id.RefreshToken == "" {
 		fmt.Fprintln(os.Stderr, mipsidentity.ErrLegacy)
-		return watch(ctx, g, id, devices, kind, nil)
+		return use(id, nil)
 	}
 	for ctx.Err() == nil {
 		updated, stop := context.WithCancel(ctx)
@@ -39,7 +45,7 @@ func watchWithRenewal(ctx context.Context, g gateway, path string, devices []str
 			renewWhenDue(updated, client, path, id, stop)
 		}()
 		// Keep the MQTT session alive during HTTPS signing and retry.
-		err := watch(ctx, g, id, devices, kind, updated.Done())
+		err := use(id, updated.Done())
 		stop()
 		<-done
 		if ctx.Err() != nil {

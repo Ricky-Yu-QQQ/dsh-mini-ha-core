@@ -136,10 +136,17 @@ func parseNotification(topic string, frame []byte, virtualDID, device, kind stri
 }
 
 func connect(ctx context.Context, socket net.Conn, id string, devices []string, kind string) (*paho.Client, <-chan *paho.Publish, error) {
+	return connectWithReports(ctx, socket, id, devices, kind, nil)
+}
+
+func connectWithReports(ctx context.Context, socket net.Conn, id string, devices []string, kind string, report func(*paho.Publish) bool) (*paho.Client, <-chan *paho.Publish, error) {
 	messages := make(chan *paho.Publish, 64)
 	client := paho.NewClient(paho.ClientConfig{
 		Conn: socket, PacketTimeout: 5 * time.Second,
 		OnPublishReceived: []func(paho.PublishReceived) (bool, error){func(msg paho.PublishReceived) (bool, error) {
+			if report != nil && report(msg.Packet) {
+				return true, nil
+			}
 			select {
 			case messages <- msg.Packet:
 				return true, nil
@@ -240,6 +247,9 @@ func watch(ctx context.Context, g gateway, id mipsidentity.Identity, devices []s
 }
 
 func run() error {
+	if len(os.Args) > 1 && os.Args[1] == "serve" {
+		return runServe(os.Args[2:])
+	}
 	if len(os.Args) > 1 && os.Args[1] == "power" {
 		return runPower(os.Args[2:])
 	}
