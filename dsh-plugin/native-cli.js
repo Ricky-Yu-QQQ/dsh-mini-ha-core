@@ -2,11 +2,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {HAClient} from './client.js';
-import {SimulatedHA} from './simulated.js';
-import {RuleStore} from './store.js';
-import {validateSettings} from './model.js';
-import {NativeAutomations,validateNative,fingerprint} from './native-automations.js';
+import {HAClient} from './core/client.js';
+import {SimulatedHA} from './core/simulated.js';
+import {RuleStore} from './core/store.js';
+import {validateSettings} from './core/model.js';
+import {NativeAutomations,validateNative} from './native-automations.js';
+import {fingerprint} from './core/fingerprint.js';
 
 export async function run(settings, command, input) {
   if (!settings.native_automations) throw new Error('HA_NATIVE_NOT_CONFIGURED');

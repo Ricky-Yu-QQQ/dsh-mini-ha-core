@@ -19,7 +19,7 @@ export function validateSettings(settings) {
       || settings.agent.max_tokens < 64 || settings.agent.max_tokens > 4096)))) throw new Error('HA_INVALID_AGENT_CONFIG');
   const entities = new Map();
   for (const entry of settings.entities) {
-    if (!ID.test(entry.entity_id) || entry.local_verified !== true || entities.has(entry.entity_id))
+    if (typeof entry.entity_id !== 'string' || !ID.test(entry.entity_id) || entry.local_verified !== true || entities.has(entry.entity_id))
       throw new Error('HA_INVALID_ENROLLMENT');
     if (entry.actions && (!Array.isArray(entry.actions) || entry.actions.some(action => ![...ACTIONS, 'run'].includes(action))))
       throw new Error('HA_INVALID_ALLOWED_ACTION');
@@ -33,7 +33,8 @@ export function validateSettings(settings) {
 export function enrolled(entities, id, action) {
   const entity = entities.get(id);
   if (!entity) throw new Error('HA_ENTITY_NOT_ENROLLED');
-  if (action && (entity.control_allowed !== true || (entity.actions && !entity.actions.includes(action))))
+  if (action && (entity.control_allowed !== true || (entity.actions && !entity.actions.includes(action))
+    || (entity.miot_power && !['turn_on', 'turn_off'].includes(action))))
     throw new Error('HA_ENTITY_READ_ONLY');
   return entity;
 }
@@ -55,7 +56,7 @@ export function validateOperation(operation, entities) {
 
 export function validateRule(input, entities, eventTypes) {
   only(input, ['id', 'name', 'enabled', 'trigger', 'conditions', 'actions', 'cooldown_ms']);
-  if (!NAME.test(input.id) || !text(input.name, 160) || typeof input.enabled !== 'boolean') throw new Error('HA_INVALID_RULE');
+  if (typeof input.id !== 'string' || !NAME.test(input.id) || !text(input.name, 160) || typeof input.enabled !== 'boolean') throw new Error('HA_INVALID_RULE');
   const trigger = input.trigger;
   if (trigger?.type === 'state') {
     only(trigger, ['type', 'entity_id', 'from', 'to', 'for_ms']);
@@ -111,7 +112,8 @@ export function matches(rule, event) {
     && Object.entries(trigger.data).every(([key, value]) => data[key] === value);
   // A snapshot/reconnect, removed entity or attribute-only update is not an edge.
   return event.event_type === 'state_changed' && data.entity_id === trigger.entity_id
-    && data.old_state && data.new_state && !['unknown', 'unavailable'].includes(data.old_state.state)
+    && typeof data.old_state?.state === 'string' && typeof data.new_state?.state === 'string'
+    && !['unknown', 'unavailable'].includes(data.old_state.state)
     && data.old_state.state !== data.new_state.state && data.new_state.state === trigger.to
     && (trigger.from === undefined || data.old_state.state === trigger.from);
 }
@@ -120,7 +122,7 @@ export function predicate(condition, state) {
   if (!state || ['unknown', 'unavailable'].includes(state.state)) return false;
   const value = condition.attribute ? state.attributes?.[condition.attribute] : state.state;
   if (condition.equals !== undefined) return value === condition.equals;
-  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return false;
+  if (typeof value !== 'number' && (typeof value !== 'string' || !value.trim())) return false;
   const number = Number(value);
   return Number.isFinite(number) && (condition.above === undefined || number > condition.above)
     && (condition.below === undefined || number < condition.below);

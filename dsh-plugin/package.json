@@ -1,19 +1,21 @@
 {
   "name": "dsh-mini-ha-core-plugin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "DSH plugin for local Xiaomi device control and persistent home automation rules",
+  "description": "Local Xiaomi device control and versioned home automations backed by Mini HA Core",
   "engines": {
     "node": ">=24.9.0"
   },
   "exports": {
     ".": "./index.js",
+    "./core": "./core/index.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "*.js",
+    "core/*.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",

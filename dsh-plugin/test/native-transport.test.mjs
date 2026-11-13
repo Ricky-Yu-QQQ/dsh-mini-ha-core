@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';import os from 'node:os';import path from 'node:path';import http from 'node:http';
-import {HAClient} from '../client.js';
+import {HAClient} from '../core/client.js';
 
 test('native HTTP adapter uses GET/POST/DELETE on fixed managed config route only',async t=>{
  const root=await fs.mkdtemp(path.join(os.tmpdir(),'nomi-config-http-'));

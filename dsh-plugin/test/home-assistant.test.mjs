@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fixture, rule, until} from './fixture.mjs';
-import {lanURL} from '../client.js';
-import {RuleStore} from '../store.js';
+import {lanURL} from '../core/client.js';
+import {RuleStore} from '../core/store.js';
 
 test('fixed LAN endpoint rejects public hosts, credentials, paths and DNS', () => {
   for (const value of ['http://example.com', 'http://8.8.8.8', 'http://169.254.1.1', 'http://0.0.0.0',
@@ -194,7 +194,7 @@ test('store ownership, crash claim recovery and durable cooldown prevent replay 
   await h.engine.put(rule(), 0);
   const event = h.ha.stateEvent('binary_sensor.presence', 'on'); h.ha.broadcast(event);
   await until(() => h.store.snapshot().runs[0]?.status === 'completed');
-  await h.store.transact(data => { data.runs[0].status = 'running'; });
+  h.store.updateRun(h.store.snapshot().runs[0].id, {status: 'running'});
   await h.store.close();
   await h.store.open();
   assert.equal(h.store.snapshot().runs[0].status, 'interrupted');

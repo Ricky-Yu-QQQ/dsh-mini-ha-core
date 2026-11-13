@@ -17,6 +17,7 @@ import * as NativeExecutor from '@deepseek-ai/dsh-tool-executor-native';
 import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import Credentials from '@deepseek-ai/dsh-credentials';
 import HomeAssistant from '../index.js';
+import {DatabaseSync} from 'node:sqlite';
 import {fakeHA, rule, until} from './fixture.mjs';
 
 class TestCredentials extends Credentials {
@@ -70,7 +71,9 @@ const toolCall = (name, args) => [{delta: {role: 'assistant', tool_calls: [{inde
 
 test('actual Cordis service mounts tools, persists rules, unloads and re-enables', async t => {
   const h = await harness(t);
-  assert.equal(h.ctx.tools.definitions().length, 9);
+  assert.ok(h.ctx.tools.get('ha_control'));
+  assert.ok(h.ctx.tools.get('ha_rule_draft'));
+  assert.ok(h.ctx.tools.get('ha_rule_run'));
   const tool = h.ctx.tools.get('ha_rule_put');
   const saved = await tool.execute({rule: rule(), expected_revision: 0}, {signal: new AbortController().signal});
   assert.equal(saved.revision, 1);
@@ -168,8 +171,12 @@ test('unloading the plugin aborts and drains a pending DSH callback and releases
   assert.deepEqual(h.ctx.agents.list(), []);
   assert.equal(h.ctx.sessions.get(callback.id), undefined);
   assert.equal(service.engine.health.queued, 0);
-  assert.equal(service.store.snapshot().runs[0].status, 'failed');
-  assert.equal(service.store.snapshot().runs[0].error, 'HA_CANCELLED');
+  const ledger = new DatabaseSync(service.store.file, {readOnly: true});
+  try {
+    const run = JSON.parse(ledger.prepare('SELECT body FROM runs').get().body);
+    assert.equal(run.status, 'failed');
+    assert.equal(run.error, 'HA_CANCELLED');
+  } finally { ledger.close(); }
   assert.deepEqual(h.ha.calls, []);
   pending.resolve([{delta: {content: 'late'}}, {delta: {}, finish_reason: 'stop'}]);
 });
@@ -232,7 +239,8 @@ test('native automation tools mount in real DSH with simulated HA and no speaker
   const initial=await fakeHA(t);
   const h=await harness(t,undefined,{ha_backend:'simulated',native_automations:{allow_enable:false},xiaomi_configuration:true,
     simulated_states:[...initial.states.values()]});
-  assert.equal(h.ctx.tools.definitions().length,18);
+  assert.ok(h.ctx.tools.get('ha_automation_preview'));
+  assert.ok(h.ctx.tools.get('ha_rule_draft'));
   const native={id:'nomi_desk',alias:'Desk presence',initial_state:false,mode:'single',
     triggers:[{trigger:'state',entity_id:'binary_sensor.presence',to:'on'}],conditions:[],
     actions:[{alias:'desk_on',action:'light.turn_on',target:{entity_id:'light.desk'}}]};
@@ -281,22 +289,24 @@ test('DSH uses a MIPS power edge to run the enrolled Go control and persist its 
   const fixture = path.join(directory, 'light.json'), push = path.join(directory, 'push.json');
   const control = path.join(directory, 'control'), watch = path.join(directory, 'watch');
   const before = {power: false, brightness: 50, kelvin: 3000};
+  const switchFile = path.join(directory, 'switch.json');
+  await fs.writeFile(switchFile, JSON.stringify({power: false}), {mode: 0o600});
   await fs.writeFile(fixture, JSON.stringify(before), {mode: 0o600});
   await fs.writeFile(control, `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2), get = key => args[args.indexOf(key) + 1];
 const file = get('-config'), current = JSON.parse(fs.readFileSync(file));
-if (get('-expected-light') !== 'fixture.light') process.exit(1);
-const emit = row => console.log(JSON.stringify(row));
+const channel = get('-expected-device') === 'fixture.switch';
+if (channel ? get('-expected-power') !== '3/2' : get('-expected-light') !== 'fixture.light') process.exit(1);
+const [siid, piid] = channel ? [3, 2] : [2, 1];
+const emit = row => console.log(JSON.stringify({...row, siid, piid}));
 if (get('-mode') === 'read') emit({phase:'readback', ...current});
 else {
-  if (get('-property') !== 'power' || get('-value') !== 'false' || !current.power) process.exit(2);
-  fs.writeFileSync(file, JSON.stringify({...current, power:false}));
-  if (fs.existsSync(file + '.omit-ack')) emit({phase:'write-confirmed', piid:1, value:false});
-  else {
-    emit({phase:'write-ack', piid:1, code:1});
-    emit({phase:'write-confirmed', piid:1, code:1, value:false});
-  }
+  const value = channel;
+  if (get('-property') !== 'power' || get('-value') !== String(value) || current.power === value) process.exit(2);
+  fs.writeFileSync(file, JSON.stringify({...current, power:value}));
+  if (!fs.existsSync(file + '.omit-ack')) emit({phase:'write-ack', code:1});
+  emit({phase:'write-confirmed', code:1, value});
 }
 `, {mode: 0o700});
   await fs.writeFile(watch, `#!${process.execPath}
@@ -315,8 +325,16 @@ setInterval(() => {
   const h = await harness(t, undefined, {ha_backend: 'miot_lan', agent: undefined, native_automations: undefined,
     miot_lan: {control_binary: control, watch_binary: watch, gateway_path: fixture, identity_path: fixture},
     entities: [{entity_id: 'light.test', local_verified: true, control_allowed: true, actions: ['turn_off'],
-      miot_did: 'fixture.light', miot_config_path: fixture}]});
+      miot_did: 'fixture.light', miot_config_path: fixture},
+      {entity_id: 'switch.fixture', local_verified: true, control_allowed: true, actions: ['turn_on'],
+        miot_did: 'fixture.switch', miot_config_path: switchFile, miot_power: {siid: 3, piid: 2}}]});
   assert.equal(h.ctx.homeAssistant.controls.search()[0].miot_config_path, undefined);
+  assert.equal(h.ctx.tools.get('ha_run_logic'), undefined);
+  const exec = {signal: new AbortController().signal};
+  const channel = await h.ctx.tools.get('ha_control').execute({entity_id: 'switch.fixture', action: 'turn_on'}, exec);
+  assert.equal(channel.status, 'confirmed');
+  assert.deepEqual(channel.receipts, [{siid: 3, piid: 2, code: 1, value: true, readback_confirmed: true}]);
+  assert.equal(h.ctx.homeAssistant.controls.search('fixture')[0].miot_power, undefined);
   await h.ctx.tools.get('ha_rule_put').execute({expected_revision: 0, rule: {
     id: 'miot-power', name: 'Turn the enrolled light off on a rising edge', enabled: true,
     trigger: {type: 'state', entity_id: 'light.test', from: 'off', to: 'on'},
@@ -338,4 +356,64 @@ setInterval(() => {
   assert.equal(missingAck.status, 'uncertain');
   assert.deepEqual(missingAck.receipts, []);
   assert.deepEqual(h.ha.calls, []);
+});
+
+test('a native DSH Agent operates a switch and authors a Core rule through the registered tools', async t => {
+  const settings = JSON.parse(await fs.readFile(new URL('../simulated.example.json', import.meta.url), 'utf8'));
+  const operation = {entity_id: 'light.living', action: 'turn_on'};
+  const definition = {
+    id: 'living-auto', name: '有人且暗时关灯', enabled: false,
+    trigger: {type: 'state', entity_id: 'binary_sensor.living_presence', from: 'off', to: 'on'},
+    conditions: [{entity_id: 'sensor.living_illuminance', below: 30}],
+    actions: [{type: 'control', entity_id: 'light.living', action: 'turn_off'}],
+  };
+  const event = {event_type: 'state_changed', data: {entity_id: 'binary_sensor.living_presence',
+    old_state: {state: 'off'}, new_state: {state: 'on'}}};
+  const states = [
+    {entity_id: 'binary_sensor.living_presence', state: 'on'},
+    {entity_id: 'sensor.living_illuminance', state: '5'},
+  ];
+  let draftId, controlId;
+  const h = await harness(t, body => {
+    const messages = body.messages.filter(message => message.role === 'tool');
+    for (const message of messages) assert.ok(message.content.startsWith('{'), message.content);
+    const receipts = messages.map(message => JSON.parse(message.content));
+    if (receipts.length === 0) return toolCall('ha_control', operation);
+    if (receipts.length === 1) {
+      assert.equal(receipts[0].status, 'confirmed');
+      controlId = receipts[0].operation_id;
+      return toolCall('ha_rule_draft', {rule: definition, expected_revision: 0});
+    }
+    if (receipts.length === 2) {
+      draftId = receipts[1].id;
+      return toolCall('ha_rule_test', {draft_id: draftId, event, states});
+    }
+    if (receipts.length === 3) {
+      assert.equal(receipts[2].matched, true);
+      return toolCall('ha_rule_publish', {draft_id: draftId, enabled: true});
+    }
+    return [{delta: {content: '已启用。'}}, {delta: {}, finish_reason: 'stop'}];
+  }, {...settings, agent: undefined});
+  const owner = await h.ctx.agents.create({sessionId: 'home-owner', agentOptions: {provider: 'test-provider', model: 'test'}});
+  try {
+    owner.agent.followup(createUserMessage({source: {kind: 'user'}, content: [{type: 'text',
+      text: '打开客厅灯。创建、模拟并启用有人且较暗时关灯的规则。'}]}));
+    await owner.agent.whenIdle();
+  } finally { await owner.dispose(); }
+
+  const service = h.ctx.homeAssistant;
+  assert.equal(service.store.control(controlId).origin.session_id, 'home-owner');
+  assert.equal(service.store.draft(draftId).origin.session_id, 'home-owner');
+  assert.equal(service.store.version(definition.id, 1).origin.session_id, 'home-owner');
+  assert.equal(h.requests.length, 5);
+  assert.equal(service.client.calls.length, 1);
+  service.client.setState('binary_sensor.living_presence', 'on');
+  await service.engine.tail;
+  assert.equal(service.client.calls.length, 2);
+  assert.equal(h.requests.length, 5);
+  const exec = {signal: new AbortController().signal};
+  const query = (name, args) => h.ctx.tools.get(name).execute(args, exec);
+  const {items: [run]} = await query('ha_rule_runs', {id: definition.id});
+  assert.equal((await query('ha_rule_run', {run_id: run.id})).results[0].result.state.state, 'off');
+  assert.equal((await query('ha_control_receipt', {operation_id: controlId})).status, 'confirmed');
 });

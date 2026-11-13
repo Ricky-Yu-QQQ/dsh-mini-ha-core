@@ -1,9 +1,9 @@
 /** Explicit read-only connectivity and capability check; never calls services. */
 import fs from 'node:fs/promises';
 import {pathToFileURL} from 'node:url';
-import {HAClient} from './client.js';
-import {validateSettings} from './model.js';
-import {errorCode} from './engine.js';
+import {HAClient} from './core/client.js';
+import {validateSettings} from './core/model.js';
+import {errorCode} from './core/engine.js';
 
 export async function probe(settings) {
   const entities = validateSettings(settings), client = new HAClient(settings);

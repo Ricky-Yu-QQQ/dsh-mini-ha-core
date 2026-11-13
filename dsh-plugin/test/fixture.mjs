@@ -4,11 +4,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
-import {HAClient} from '../client.js';
-import {RuleStore} from '../store.js';
-import {Controls} from '../controls.js';
-import {RuleEngine} from '../engine.js';
-import {validateSettings} from '../model.js';
+import {HAClient} from '../core/client.js';
+import {RuleStore} from '../core/store.js';
+import {Controls} from '../core/controls.js';
+import {RuleEngine} from '../core/engine.js';
+import {validateSettings} from '../core/model.js';
 
 export async function until(check, timeout = 3000) {
   const deadline = Date.now() + timeout;

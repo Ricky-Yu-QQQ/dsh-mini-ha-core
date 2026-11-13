@@ -7,6 +7,9 @@ import {setTimeout as delay} from 'node:timers/promises';
 const privatePath = value => typeof value === 'string' && path.isAbsolute(value) && path.normalize(value).split(path.sep).includes('.local');
 const absolute = value => typeof value === 'string' && path.isAbsolute(value);
 const fields = {1: 'power', 2: 'brightness', 3: 'kelvin'};
+const propertyId = value => Number.isInteger(value) && value >= 1 && value <= 65535;
+const did = value => typeof value === 'string' && /^[a-zA-Z0-9_.-]{1,64}$/.test(value);
+const stateForPower = (entity_id, power) => ({entity_id, state: power ? 'on' : 'off', attributes: {}});
 const validValue = (field, value) => field === 'power' ? typeof value === 'boolean'
   : Number.isInteger(value) && (field === 'brightness' ? value >= 0 && value <= 100 : value >= 1000 && value <= 20000);
 const stateFor = (entity_id, light) => ({entity_id, state: light.power ? 'on' : 'off', attributes: {
@@ -25,12 +28,23 @@ export class MiotLAN extends EventEmitter {
       throw new Error('HA_INVALID_MIOT_LAN_CONFIG');
     this.config = config;
     this.entities = entities;
-    this.byDid = new Map();
+    this.devices = new Set();
+    this.properties = new Map();
     for (const [id, entity] of entities) {
-      if (!id.startsWith('light.') || typeof entity.miot_did !== 'string' || !/^[a-zA-Z0-9_.-]{1,64}$/.test(entity.miot_did)
-        || !privatePath(entity.miot_config_path) || this.byDid.has(entity.miot_did) || entity.actions?.includes('run'))
-        throw new Error('HA_INVALID_MIOT_LIGHT');
-      this.byDid.set(entity.miot_did, id);
+      const {miot_did, miot_config_path, miot_power: power} = entity;
+      if (!did(miot_did) || !privatePath(miot_config_path)
+        || (power === undefined ? !id.startsWith('light.') || entity.actions?.includes('run')
+          : !/^(light|switch)\./.test(id) || !propertyId(power?.siid) || !propertyId(power?.piid)
+            || entity.actions?.some(action => !['turn_on', 'turn_off'].includes(action))))
+        throw new Error(power === undefined ? 'HA_INVALID_MIOT_LIGHT' : 'HA_INVALID_MIOT_POWER');
+      this.devices.add(miot_did);
+      const register = (siid, piid, field) => {
+        const key = `${miot_did}/${siid}/${piid}`;
+        if (this.properties.has(key)) throw new Error('HA_DUPLICATE_MIOT_PROPERTY');
+        this.properties.set(key, {id, field});
+      };
+      if (power) register(power.siid, power.piid, 'power');
+      else for (const [piid, field] of Object.entries(fields)) register(2, piid, field);
     }
     this.timeout = settings.request_timeout_ms ?? 15000;
     this.stop = new AbortController();
@@ -45,7 +59,10 @@ export class MiotLAN extends EventEmitter {
     if (!entity) throw new Error('HA_ENTITY_NOT_ENROLLED');
     signal = signal ? AbortSignal.any([signal, this.stop.signal]) : this.stop.signal;
     signal.throwIfAborted();
-    const base = ['-config', entity.miot_config_path, '-expected-light', entity.miot_did, '-journal', '-'];
+    const power = entity.miot_power;
+    const target = power ? ['-expected-device', entity.miot_did, '-expected-power', `${power.siid}/${power.piid}`]
+      : ['-expected-light', entity.miot_did];
+    const base = ['-config', entity.miot_config_path, ...target, '-journal', '-'];
     const {error, stdout} = await new Promise(resolve => {
       execFile(this.config.control_binary, [...base, ...args], {signal, timeout: this.timeout, maxBuffer: 65536},
         (error, stdout) => resolve({error, stdout}));
@@ -63,7 +80,13 @@ export class MiotLAN extends EventEmitter {
     const {ok, rows} = await this.command(id, ['-mode', 'read'], signal);
     signal?.throwIfAborted();
     const light = rows.find(row => row.phase === 'readback');
-    if (!ok || !light || Object.values(fields).some(field => !validValue(field, light[field])))
+    const power = this.entities.get(id).miot_power;
+    if (!ok || !light || !validValue('power', light.power)) throw new Error('HA_MIOT_READ_FAILED');
+    if (power) {
+      if (light.siid !== power.siid || light.piid !== power.piid) throw new Error('HA_MIOT_READ_FAILED');
+      return stateForPower(id, light.power);
+    }
+    if (!validValue('brightness', light.brightness) || !validValue('kelvin', light.kelvin))
       throw new Error('HA_MIOT_READ_FAILED');
     return stateFor(id, light);
   }
@@ -94,17 +117,19 @@ export class MiotLAN extends EventEmitter {
     for (const [field, value] of Object.entries(target)) {
       if (current[field] === value) continue;
       signal?.throwIfAborted();
-      const piid = Number(Object.keys(fields).find(key => fields[key] === field));
+      const power = this.entities.get(id).miot_power;
+      const siid = power?.siid ?? 2, piid = power?.piid ?? Number(Object.keys(fields).find(key => fields[key] === field));
+      const matchesProperty = row => row.siid === siid && row.piid === piid;
       let command;
       try {
         command = await this.command(id, ['-mode', 'set', '-apply', '-property', field, '-value', JSON.stringify(value)], signal);
       } catch {
         return result('uncertain', {reason: 'device_result_unknown_no_retry'});
       }
-      const ack = command.rows.find(row => row.phase === 'write-ack' && row.piid === piid && [0, 1].includes(row.code));
-      const confirmed = !!ack && command.rows.some(row => row.phase === 'write-confirmed' && row.piid === piid
+      const ack = command.rows.find(row => row.phase === 'write-ack' && matchesProperty(row) && [0, 1].includes(row.code));
+      const confirmed = !!ack && command.rows.some(row => row.phase === 'write-confirmed' && matchesProperty(row)
         && row.code === ack.code && row.value === value);
-      if (ack) receipts.push({siid: 2, piid, code: ack.code, value, readback_confirmed: confirmed});
+      if (ack) receipts.push({siid, piid, code: ack.code, value, readback_confirmed: confirmed});
       if (!command.ok || !confirmed)
         return result(ack ? 'unconfirmed' : 'uncertain', {reason: 'device_result_unknown_no_retry'});
     }
@@ -169,8 +194,10 @@ export class MiotLAN extends EventEmitter {
       this.reset('miot_certificate_renewed');
       return;
     }
-    if (!this.baseline || message.phase !== 'device-property' || message.source !== 'local-mips' || message.siid !== 2) return;
-    const id = this.byDid.get(message.did), field = fields[message.piid];
+    if (!this.baseline || message.phase !== 'device-property' || message.source !== 'local-mips') return;
+    const property = this.properties.get(`${message.did}/${message.siid}/${message.piid}`);
+    if (!property) return;
+    const {id, field} = property;
     const age = Date.now() - Date.parse(message.at);
     if (!id || !field || !validValue(field, message.value) || !Number.isFinite(age) || age < -5000 || age > 60000) return;
     const before = this.states.get(id);
@@ -182,7 +209,7 @@ export class MiotLAN extends EventEmitter {
       kelvin: before.attributes.color_temp_kelvin};
     if (light[field] === message.value) return;
     light[field] = message.value;
-    const after = stateFor(id, light);
+    const after = this.entities.get(id).miot_power ? stateForPower(id, light.power) : stateFor(id, light);
     this.states.set(id, after);
     if (!this.ready) return;
     this.health.last_event_at = message.at;
@@ -192,7 +219,7 @@ export class MiotLAN extends EventEmitter {
 
   async supervise() {
     const {watch_binary, gateway_path, identity_path} = this.config;
-    const args = ['-gateway', gateway_path, '-identity', identity_path, '-device', [...this.byDid.keys()].join(','),
+    const args = ['-gateway', gateway_path, '-identity', identity_path, '-device', [...this.devices].join(','),
       '-kind', 'property', '-duration', '0'];
     let backoff = 250;
     while (!this.stop.signal.aborted) {

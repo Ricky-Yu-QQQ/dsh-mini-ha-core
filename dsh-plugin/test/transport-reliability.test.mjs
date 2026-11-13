@@ -4,9 +4,9 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {HAClient} from '../client.js';
-import {Controls} from '../controls.js';
-import {validateSettings} from '../model.js';
+import {HAClient} from '../core/client.js';
+import {Controls} from '../core/controls.js';
+import {validateSettings} from '../core/model.js';
 
 // Only loopback HTTP is used here; no household HA endpoint or credentials.
 async function localHA(t, handler, options = {}) {

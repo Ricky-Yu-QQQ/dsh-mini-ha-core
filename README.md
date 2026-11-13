@@ -1,27 +1,28 @@
 # DSH Mini HA Core
 
-A Go client for local Xiaomi gateway control and a DeepSeek Harness plugin for
-persistent automations. The plugin reads gateway notifications, matches rules,
-and records each command's device acknowledgement and readback.
+Mini HA Core reads Xiaomi device events, controls enrolled devices, and
+runs persistent local automations. The DeepSeek Harness plugin exposes these
+capabilities as tools. An agent can author rules, then the Core matches events,
+evaluates conditions, runs device actions, and records their readbacks.
 
 | Directory | Purpose |
 | --- | --- |
-| [core](core) | Go tools for miIO reads and writes, MIPS MQTT subscriptions, and Xiaomi gateway certificate enrollment and renewal |
-| [dsh-plugin](dsh-plugin) | DeepSeek Harness plugin with device enrollment, controls, rule management, and execution history |
+| [core](core) | Go transport for miIO reads and writes, MIPS MQTT subscriptions, and gateway certificate enrollment and renewal |
+| [dsh-plugin/core](dsh-plugin/core) | Node.js Core for device operations, local rule execution and SQLite persistence |
+| [dsh-plugin](dsh-plugin) | DeepSeek Harness tool adapter and installation instructions |
 | [examples](examples) | Configuration templates with placeholder values |
 
-The local backend supports enrolled lights that expose power, brightness, and
-color temperature in MIoT service 2. The control CLI also supports a single
-registered boolean power property on a light or switch. Reads and writes use local miIO. Property
-notifications use the gateway's MIPS MQTT broker. Certificate enrollment and
-renewal use Xiaomi's authorization service. Running the local backend requires
-no Home Assistant server.
+The local backend supports enrolled lights with MIoT service 2 power,
+brightness, and color temperature. Individual light or switch channels can
+register a verified boolean power property. Control uses local miIO and
+property notifications use MIPS MQTT. Certificate enrollment and renewal
+use Xiaomi's authorization service. The local backend runs without a Home
+Assistant server.
 
 ## Build
 
-Use Go 1.24 or newer on macOS or Linux. The DSH plugin requires Node.js 24.9+
-and a running [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-host. Browser enrollment currently uses Google Chrome on macOS.
+Use Go 1.24 or newer on macOS or Linux. The rule runtime uses Node.js 24.9+
+and its bundled SQLite. The plugin runs inside [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Browser enrollment currently uses Google Chrome on macOS.
 
 ```sh
 mkdir -p bin
@@ -75,6 +76,13 @@ For power properties exposed only through the local MIPS proxy, use
 `device`, `power`, and the absolute owner-only `gateway` and `identity`
 JSON paths. It uses the same pinned TLS and exclusive identity lock as the
 watcher. A write is sent once and verified by a fresh property read.
+
+## Benchmark
+
+`node scripts/benchmark-rules.mjs` measures indexed matching and the local
+event-to-receipt path using 256 definitions, 256 historical runs, and a
+simulated device. Pass the absolute `dsh-plugin` directory from commit
+`7a568bd` to compare against the JSON store. The timings cover Core only.
 
 ## Test
 

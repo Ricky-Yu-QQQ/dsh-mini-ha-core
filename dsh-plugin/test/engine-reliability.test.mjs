@@ -2,10 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {DatabaseSync} from 'node:sqlite';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fixture, rule, until} from './fixture.mjs';
-import {RuleStore} from '../store.js';
-import {RuleEngine} from '../engine.js';
+import {RuleStore} from '../core/store.js';
+import {RuleEngine} from '../core/engine.js';
 
 test('durable execution request survives replacement and deletion of the source rule', async t => {
   const h = await fixture(t, {event_types: ['nomi_button']});
@@ -35,13 +36,16 @@ test('each side effect has a durable action claim and crash recovery never retri
   h.engine.accept(event, h.client.generation);
   try {
     await until(() => entered);
-    const durable = JSON.parse(await fs.readFile(h.store.file, 'utf8'));
-    assert.equal(durable.runs[0].action_claim?.index, 1);
-    assert.equal(durable.runs[0].results.length, 1);
-    assert.deepEqual(durable.runs[0].request, {rule: saved, event});
+    const view = new DatabaseSync(h.store.file, {readOnly: true});
+    const durable = JSON.parse(view.prepare('SELECT body FROM runs').get().body);
+    assert.equal(durable.action_claim?.index, 1);
+    assert.equal(durable.results.length, 1);
+    assert.deepEqual(durable.request, {rule: saved, event});
+    view.close();
     const recoveredDirectory = path.join(h.directory, 'crash-copy');
     await fs.mkdir(recoveredDirectory);
-    await fs.writeFile(path.join(recoveredDirectory, 'rules.private.json'), JSON.stringify(durable));
+    h.store.db.exec('PRAGMA wal_checkpoint(FULL)');
+    await fs.copyFile(h.store.file, path.join(recoveredDirectory, 'rules.sqlite'));
     const recovered = new RuleStore(recoveredDirectory); await recovered.open();
     const restarted = new RuleEngine({store: recovered, client: h.client, controls: h.controls, settings: h.settings});
     try {
@@ -52,7 +56,7 @@ test('each side effect has a durable action claim and crash recovery never retri
       assert.equal(interrupted.status, 'interrupted');
       assert.equal(interrupted.action_claim.index, 1);
       // Remove cooldown as an independent reason to suppress the already claimed event.
-      await recovered.transact(data => { delete data.cooldowns[saved.id]; });
+      recovered.db.prepare('DELETE FROM cooldowns WHERE id=?').run(saved.id);
       restarted.accept(event, h.client.generation); await restarted.tail;
       assert.equal(retried, 0);
       assert.equal(recovered.snapshot().runs.length, 1);
@@ -65,7 +69,7 @@ test('closing the store stops admitting transactions before ownership is release
   const h = await fixture(t);
   const closing = h.store.close();
   try {
-    await assert.rejects(h.store.transact(data => { data.gaps.push({reason: 'late-writer'}); }), /HA_STORE_CLOSED/);
+    assert.throws(() => h.store.recordGap({reason: 'late-writer'}), /HA_STORE_CLOSED/);
     await closing;
   } finally { await closing; await h.store.open(); }
   assert.equal(h.store.snapshot().gaps.some(gap => gap.reason === 'late-writer'), false);

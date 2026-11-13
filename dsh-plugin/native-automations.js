@@ -1,8 +1,5 @@
 /** Native HA automations: HA owns triggers/execution; DSH owns revisioned edits. */
-import {createHash} from 'node:crypto';
-const stable = value => Array.isArray(value) ? value.map(stable) : value && typeof value === 'object'
-  ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value;
-export const fingerprint = value => createHash('sha256').update(JSON.stringify(stable(value))).digest('hex');
+import {fingerprint} from './core/fingerprint.js';
 const ID = /^nomi_[a-z0-9_]{1,100}$/;
 const SERVICES = new Set(['light.turn_on','light.turn_off','switch.turn_on','switch.turn_off','fan.turn_on','fan.turn_off',
   'climate.turn_on','climate.turn_off','cover.open_cover','cover.close_cover','input_select.select_option',
@@ -94,7 +91,7 @@ export class NativeAutomations {
     this.client=client; this.store=store; this.entities=entities; this.settings=settings; this.tail=Promise.resolve();
   }
   serial(fn) { const work=this.tail.catch(()=>{}).then(fn);this.tail=work.catch(()=>{});return work; }
-  list() { return (this.store.snapshot().native_automations ?? []).map(({history,...row})=>row); }
+  list() { return (this.store.nativeSnapshot().native_automations ?? []).map(({history,...row})=>row); }
   async get(id, signal) {
     if (!ID.test(id)) fail('HA_NATIVE_INVALID_ID');
     const row=this.list().find(r=>r.id===id);if(!row) fail('HA_NATIVE_NOT_MANAGED');
@@ -115,13 +112,13 @@ export class NativeAutomations {
   async save(config, expectedRevision, signal) {
     const old=this.list().find(r=>r.id===config.id);
     if (!Number.isInteger(expectedRevision) || expectedRevision<0 || (old?.revision ?? 0)!==expectedRevision) fail('HA_NATIVE_REVISION_CONFLICT');
-    if (this.store.snapshot().native_pending?.[config.id]) fail('HA_NATIVE_PENDING_RECONCILE_REQUIRED');
+    if (this.store.nativeSnapshot().native_pending?.[config.id]) fail('HA_NATIVE_PENDING_RECONCILE_REQUIRED');
     let actual;
     try { actual=await this.client.automationConfig(config.id,undefined,signal); }
     catch(error) { if(error.message!=='HA_HTTP_404') throw error; }
     if (old ? !actual || fingerprint(actual)!==old.hash : actual) fail('HA_NATIVE_REMOTE_CONFLICT');
     const intent={id:config.id,config,expected_revision:expectedRevision,at:new Date().toISOString()};
-    await this.store.transact(data=>{(data.native_pending ??= {})[config.id]=intent;});
+    await this.store.transactNative(data=>{(data.native_pending ??= {})[config.id]=intent;});
     try {
       await this.client.automationConfig(config.id,config,signal);
       const read=await this.client.automationConfig(config.id,undefined,signal);
@@ -129,12 +126,12 @@ export class NativeAutomations {
       return await this.commit(intent);
     } catch(error) {
       // Keep uncertain writes pending. A subsequent get/reconcile reads, never replays.
-      if(/^HA_HTTP_4\d\d$/.test(error.message)) await this.store.transact(d=>{delete d.native_pending[config.id];});
+      if(/^HA_HTTP_4\d\d$/.test(error.message)) await this.store.transactNative(d=>{delete d.native_pending[config.id];});
       throw error;
     }
   }
   commit(intent) {
-    return this.store.transact(data=>{
+    return this.store.transactNative(data=>{
       const rows=data.native_automations ??= [], index=rows.findIndex(r=>r.id===intent.id), old=rows[index];
       const row={id:intent.id,revision:intent.expected_revision+1,hash:fingerprint(intent.config),config:intent.config,
         updated_at:new Date().toISOString(),history:[...(old?.history ?? []),...(old?[{revision:old.revision,config:old.config}]:[])].slice(-10)};
@@ -144,7 +141,7 @@ export class NativeAutomations {
   }
   reconcile(id, signal) {
     return this.serial(async()=>{
-      const pending=this.store.snapshot().native_pending?.[id];if(!pending) return this.get(id,signal);
+      const pending=this.store.nativeSnapshot().native_pending?.[id];if(!pending) return this.get(id,signal);
       if(pending.operation==='delete') {
         try { await this.client.automationConfig(id,undefined,signal); }
         catch(error) {if(error.message==='HA_HTTP_404')return this.commitDelete(id);throw error;}
@@ -189,12 +186,12 @@ export class NativeAutomations {
     });
   }
   rollback(id, revision, targetRevision, options={}) {
-    const row=this.store.snapshot().native_automations?.find(r=>r.id===id);
+    const row=this.store.nativeSnapshot().native_automations?.find(r=>r.id===id);
     const target=row?.history.find(r=>r.revision===targetRevision);if(!target)fail('HA_NATIVE_HISTORY_NOT_FOUND');
     return this.put({...target.config,initial_state:false},revision,options);
   }
   commitDelete(id) {
-    return this.store.transact(data=>{
+    return this.store.transactNative(data=>{
       data.native_automations=data.native_automations.filter(r=>r.id!==id);
       delete data.native_pending[id];return {deleted:true,id};
     });
@@ -203,11 +200,11 @@ export class NativeAutomations {
     return this.serial(async()=>{
       const row=await this.get(id,signal);if(row.revision!==expectedRevision)fail('HA_NATIVE_REVISION_CONFLICT');
       if(row.drift)fail('HA_NATIVE_REMOTE_CONFLICT');
-      if(this.store.snapshot().native_pending?.[id]) fail('HA_NATIVE_PENDING_RECONCILE_REQUIRED');
-      await this.store.transact(data=>{(data.native_pending??={})[id]={id,operation:'delete',expected_revision:expectedRevision,at:new Date().toISOString()};});
+      if(this.store.nativeSnapshot().native_pending?.[id]) fail('HA_NATIVE_PENDING_RECONCILE_REQUIRED');
+      await this.store.transactNative(data=>{(data.native_pending??={})[id]={id,operation:'delete',expected_revision:expectedRevision,at:new Date().toISOString()};});
       try { await this.client.deleteAutomation(id,signal); }
       catch(error) {
-        if(/^HA_HTTP_4\d\d$/.test(error.message))await this.store.transact(data=>{delete data.native_pending[id];});
+        if(/^HA_HTTP_4\d\d$/.test(error.message))await this.store.transactNative(data=>{delete data.native_pending[id];});
         throw error;
       }
       try { await this.client.automationConfig(id,undefined,signal);fail('HA_NATIVE_DELETE_UNCONFIRMED'); }

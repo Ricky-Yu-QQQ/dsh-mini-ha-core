@@ -4,8 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {NativeAutomations,validateNative} from '../native-automations.js';
-import {RuleStore} from '../store.js';
-import {SimulatedHA} from '../simulated.js';
+import {RuleStore} from '../core/store.js';
+import {SimulatedHA} from '../core/simulated.js';
 
 const config=()=>({id:'nomi_hall',alias:'Hall lighting',initial_state:false,mode:'single',
   triggers:[{trigger:'state',entity_id:'binary_sensor.hall',to:'on'}],conditions:[],
@@ -60,7 +60,7 @@ test('enable lock, unenrolled entities and unsafe services fail before dispatch'
 
 test('off light configuration uses HA extension and preserves off in simulated backend',async t=>{
  const {client,entities}=await setup(t);
- const {Controls}=await import('../controls.js');
+ const {Controls}=await import('../core/controls.js');
  client.states.get('light.hall').attributes={supported_color_modes:['color_temp'],min_color_temp_kelvin:2700,max_color_temp_kelvin:6500};
  const controls=new Controls(client,entities);
  const receipt=await controls.configure({entity_id:'light.hall',brightness_pct:20,color_temp_kelvin:3000});

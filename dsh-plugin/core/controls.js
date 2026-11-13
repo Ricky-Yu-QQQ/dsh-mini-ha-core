@@ -22,17 +22,18 @@ export class Controls {
       entity.area, entity.aliases]).toLowerCase().includes(term)).slice(0, 100);
   }
   // Serialize commands to the same entity so readback cannot confirm another caller's action.
-  control(operation, signal) {
+  control(operation, signal, check = () => {}) {
     validateOperation(operation, this.entities);
     operation = structuredClone(operation);
     const previous = this.tails.get(operation.entity_id) ?? Promise.resolve();
-    const work = previous.catch(() => {}).then(() => this.perform(operation, signal));
+    const work = previous.catch(() => {}).then(() => this.perform(operation, signal, check));
     this.tails.set(operation.entity_id, work);
     work.finally(() => { if (this.tails.get(operation.entity_id) === work) this.tails.delete(operation.entity_id); }).catch(() => {});
     return work;
   }
-  async perform(operation, signal) {
+  async perform(operation, signal, check) {
     signal?.throwIfAborted();
+    check();
     const {entity_id: id, action, value} = operation, domain = id.split('.')[0];
     const before = await this.get(id, signal);
     if (['unknown', 'unavailable'].includes(before.state)) throw new Error('HA_ENTITY_UNAVAILABLE');
@@ -52,9 +53,10 @@ export class Controls {
       confirm = state => state.state === 'on' && Math.abs(state.attributes?.color_temp_kelvin - value) <= 100;
     } else confirm = state => action === 'turn_off' ? state.state === 'off' : domain === 'climate'
       ? !['off', 'unknown', 'unavailable'].includes(state.state) : state.state === 'on';
+    signal?.throwIfAborted();
+    check();
     if (this.client.writeLight) return this.client.writeLight(operation, before, signal);
     if (confirm(before)) return {status: 'confirmed', unchanged: true, requested: operation, state: before};
-    signal?.throwIfAborted();
     try { await this.client.request(`/api/services/${domain}/${service}`, data, signal); }
     catch (error) {
       if (/^HA_HTTP_4\d\d$/.test(error.message)) throw error;
