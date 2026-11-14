@@ -1,5 +1,5 @@
 import {setTimeout as delay} from 'node:timers/promises';
-import {enrolled, validateOperation} from './model.js';
+import {enrolled, POWER_DOMAINS, validateOperation} from './model.js';
 
 export class Controls {
   constructor(client, entities, options = {}) {
@@ -19,8 +19,22 @@ export class Controls {
     if (typeof query !== 'string' || query.length > 200) throw new Error('HA_INVALID_QUERY');
     const term = query.trim().toLowerCase();
     return [...this.entities.values()].filter(entity => JSON.stringify([entity.entity_id, entity.name,
-      entity.area, entity.aliases]).toLowerCase().includes(term)).slice(0, 100);
+      entity.area, entity.zones, entity.aliases]).toLowerCase().includes(term)).slice(0, 100);
   }
+  selectGroup({area, zone, device_type} = {}) {
+    if (!POWER_DOMAINS.includes(device_type)) throw new Error('HA_INVALID_DEVICE_TYPE');
+    if (![area, zone].some(value => value !== undefined) ||
+        [area, zone].some(value => value !== undefined && (typeof value !== 'string' || !value.trim())))
+      throw new Error('HA_INVALID_LOCATION');
+    const matches = [...this.entities.values()].filter(entry => entry.entity_id.startsWith(device_type + '.') &&
+      (area === undefined || entry.area === area) && (zone === undefined || entry.zones?.includes(zone)));
+    if (!matches.length) throw new Error('HA_LOCATION_NOT_FOUND');
+    if (area === undefined && (matches.some(entry => !entry.area) || new Set(matches.map(entry => entry.area)).size !== 1))
+      throw new Error('HA_LOCATION_AMBIGUOUS');
+    return matches;
+  }
+  selectLights(request) { return this.selectGroup({...request, device_type: 'light'}); }
+
   // Serialize commands to the same entity so readback cannot confirm another caller's action.
   control(operation, signal, check = () => {}) {
     validateOperation(operation, this.entities);
@@ -36,7 +50,14 @@ export class Controls {
     check();
     const {entity_id: id, action, value} = operation, domain = id.split('.')[0];
     const before = await this.get(id, signal);
+    const client = this.client.forEntity?.(id) ?? this.client;
     if (['unknown', 'unavailable'].includes(before.state)) throw new Error('HA_ENTITY_UNAVAILABLE');
+    if (client.performOperation) {
+      signal?.throwIfAborted();
+      check();
+      validateOperation(operation, this.entities);
+      return client.performOperation(operation, signal);
+    }
     const attributes = before.attributes ?? {};
     let service = action, data = {entity_id: id}, confirm;
     if (action === 'set_brightness') {
@@ -55,9 +76,10 @@ export class Controls {
       ? !['off', 'unknown', 'unavailable'].includes(state.state) : state.state === 'on';
     signal?.throwIfAborted();
     check();
-    if (this.client.writeLight) return this.client.writeLight(operation, before, signal);
+    validateOperation(operation, this.entities);
+    if (client.writeLight) return client.writeLight(operation, before, signal);
     if (confirm(before)) return {status: 'confirmed', unchanged: true, requested: operation, state: before};
-    try { await this.client.request(`/api/services/${domain}/${service}`, data, signal); }
+    try { await client.request(`/api/services/${domain}/${service}`, data, signal); }
     catch (error) {
       if (/^HA_HTTP_4\d\d$/.test(error.message)) throw error;
       return {status: 'uncertain', requested: operation, reason: 'service_result_unknown_no_retry'};
@@ -91,9 +113,12 @@ export class Controls {
       if(color_temp_kelvin!==undefined&&(!(a.supported_color_modes??[]).includes('color_temp')
         || !Number.isFinite(a.min_color_temp_kelvin)||!Number.isFinite(a.max_color_temp_kelvin)
         || color_temp_kelvin<a.min_color_temp_kelvin||color_temp_kelvin>a.max_color_temp_kelvin))throw new Error('HA_DEVICE_KELVIN_RANGE');
-      if (this.client.configureLight) return this.client.configureLight(snapshot, state, signal);
+      const client = this.client.forEntity?.(id) ?? this.client;
+      if (brightness_pct!==undefined) enrolled(this.entities,id,'set_brightness');
+      if (color_temp_kelvin!==undefined) enrolled(this.entities,id,'set_color_temperature');
+      if (client.configureLight) return client.configureLight(snapshot, state, signal);
       try {
-        const response=await this.client.request('/api/services/nomi_automation/configure_light?return_response',snapshot,signal);
+        const response=await client.request('/api/services/nomi_automation/configure_light?return_response',snapshot,signal);
         const receipt=response.service_response;
         if(receipt?.entity_id!==id || !['confirmed','unconfirmed'].includes(receipt.status))throw new Error('HA_INVALID_LIGHT_RECEIPT');
         return {...receipt,requested:snapshot};
@@ -110,10 +135,11 @@ export class Controls {
     enrolled(this.entities, id, 'run');
     const [domain] = id.split('.');
     if (!['scene', 'script', 'automation'].includes(domain)) throw new Error('HA_LOGIC_DOMAIN_DENIED');
+    const client = this.client.forEntity?.(id) ?? this.client;
     const data = {entity_id: id};
     if (domain === 'automation') data.skip_condition = false;
     try {
-      await this.client.request(`/api/services/${domain}/${domain === 'automation' ? 'trigger' : 'turn_on'}`, data, signal);
+      await client.request(`/api/services/${domain}/${domain === 'automation' ? 'trigger' : 'turn_on'}`, data, signal);
       return {status: 'accepted', entity_id: id};
     } catch (error) {
       if (/^HA_HTTP_4\d\d$/.test(error.message)) throw error;

@@ -1,4 +1,5 @@
 import {defineTool} from '@deepseek-ai/dsh-tools';
+import {ACTIONS, POWER_ACTIONS, POWER_DOMAINS} from './core/model.js';
 
 const origin = exec => Object.fromEntries(Object.entries({
   session_id: exec.agent?.session?.id, call_id: exec.callId,
@@ -22,8 +23,10 @@ const string = description => ({type: 'string', required: true, description});
 const entity = string('Exact enrolled entity_id from ha_search; never invent an ID.');
 const operation = {
   entity_id: entity,
-  action: {...string('Immediate action'), enum: ['turn_on', 'turn_off', 'set_brightness', 'set_color_temperature']},
-  value: {type: 'number', description: 'Brightness percent 0..100, or color temperature in Kelvin.'},
+  action: {...string('Immediate action'), enum: ACTIONS},
+  value: {oneOf: [{type: 'number'}, {type: 'object', additionalProperties: false, properties: {
+    drum: {type: 'integer', enum: [1, 2], required: true}, program: string('Exact Haier program ID'),
+  }}], description: 'Brightness percent, Kelvin, or the washing machine drum and program.'},
 };
 const scalar = {oneOf: ['string', 'number', 'boolean', 'null'].map(type => ({type}))};
 export const ruleSchema = {type: 'object', additionalProperties: false, properties: {
@@ -39,7 +42,7 @@ export const ruleSchema = {type: 'object', additionalProperties: false, properti
   }}},
   actions: {type: 'array', required: true, items: {type: 'object', additionalProperties: false, properties: {
     type: {...string('control, ha_logic, callback, or agent'), enum: ['control', 'ha_logic', 'callback', 'agent']},
-    entity_id: {type: 'string'}, action: {type: 'string', enum: operation.action.enum}, value: {type: 'number'},
+    entity_id: {type: 'string'}, action: {type: 'string', enum: operation.action.enum}, value: operation.value,
     name: {type: 'string'}, payload: {type: 'object', additionalProperties: true}, prompt: {type: 'string'},
   }}},
 }};
@@ -60,7 +63,18 @@ export function registerTools(ctx, service, {management = true} = {}) {
     ['ha_control', 'Execute an explicit immediate device action and read back its state. Only confirmed means success. Never retry an uncertain result.',
       operation, (args, exec) => service.core.control(args, options(exec))],
   ];
-  if (service.settings.ha_backend !== 'miot_lan') specs.push(
+  if (management) specs.push(
+    ['ha_discover_devices', 'List gateway-discovered devices and their enrollment status. Does not send appliance commands.',
+      {}, () => service.core.discovered()],
+    ['ha_control_group', 'Switch one enrolled device type in a named room or zone. Returns individual receipts.',
+      {area: {type: 'string'}, zone: {type: 'string'}, device_type: {...string('Entity domain'), enum: POWER_DOMAINS},
+        action: {...string('Power action'), enum: POWER_ACTIONS}},
+      (args, exec) => service.core.controlGroup(args, options(exec))],
+    ['ha_control_lights', 'Switch enrolled lights in a named room or zone. A zone without a room must resolve to one room. Returns individual receipts.',
+      {area: {type: 'string'}, zone: {type: 'string'}, action: {...string('Power action'), enum: ['turn_on', 'turn_off']}},
+      (args, exec) => service.core.controlLights(args, options(exec))],
+  );
+  if (!['miot_lan', 'mixed'].includes(service.settings.ha_backend)) specs.push(
     ['ha_run_logic', 'Run an enrolled HA script, scene or automation. accepted records the external service acknowledgement.',
       {entity_id: entity}, (args, exec) => service.core.runLogic(args.entity_id, options(exec))],
   );

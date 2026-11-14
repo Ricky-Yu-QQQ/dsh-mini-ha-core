@@ -24,34 +24,49 @@ export class MiotLAN extends EventEmitter {
     const config = settings.miot_lan ?? {};
     if (!absolute(config.control_binary) || !absolute(config.watch_binary)
       || !privatePath(config.gateway_path) || !privatePath(config.identity_path)
-      || settings.native_automations || settings.event_types?.length || entities.size < 1 || entities.size > 32)
+      || settings.native_automations || settings.event_types?.length)
       throw new Error('HA_INVALID_MIOT_LAN_CONFIG');
     this.config = config;
-    this.entities = entities;
-    this.devices = new Set();
-    this.properties = new Map();
-    for (const [id, entity] of entities) {
-      const {miot_did, miot_config_path, miot_power: power} = entity;
-      if (!did(miot_did) || !privatePath(miot_config_path)
-        || (power === undefined ? !id.startsWith('light.') || entity.actions?.includes('run')
-          : !/^(light|switch)\./.test(id) || !propertyId(power?.siid) || !propertyId(power?.piid)
-            || entity.actions?.some(action => !['turn_on', 'turn_off'].includes(action))))
-        throw new Error(power === undefined ? 'HA_INVALID_MIOT_LIGHT' : 'HA_INVALID_MIOT_POWER');
-      this.devices.add(miot_did);
-      const register = (siid, piid, field) => {
-        const key = `${miot_did}/${siid}/${piid}`;
-        if (this.properties.has(key)) throw new Error('HA_DUPLICATE_MIOT_PROPERTY');
-        this.properties.set(key, {id, field});
-      };
-      if (power) register(power.siid, power.piid, 'power');
-      else for (const [piid, field] of Object.entries(fields)) register(2, piid, field);
-    }
+    this.discovery = {devices: [], updated_at: null, error: null};
+    this.allowEmpty = settings.catalog_path !== undefined || settings.ha_backend === 'mixed';
+    this.updateEnrollment(this.prepareEnrollment(entities));
     this.timeout = settings.request_timeout_ms ?? 15000;
     this.stop = new AbortController();
     this.eventTypes = ['state_changed'];
     this.health = {backend: 'miot_lan', ready: false, generation: 0, gaps: 0, last_event_at: null, last_error: null};
     this.ready = false;
     this.states = new Map();
+  }
+
+  prepareEnrollment(entities) {
+    if ((!this.allowEmpty && entities.size < 1) || entities.size > 32) throw new Error('HA_INVALID_MIOT_LAN_CONFIG');
+    const devices = new Set(), properties = new Map();
+    for (const [id, entity] of entities) {
+      const {miot_did, miot_config_path, miot_power: power} = entity;
+      if (!did(miot_did) || !privatePath(miot_config_path)
+        || (power === undefined ? !id.startsWith('light.') || entity.actions?.includes('run')
+          : !/^(light|switch|fan|climate)\./.test(id) || !propertyId(power?.siid) || !propertyId(power?.piid)
+            || entity.actions?.some(action => !['turn_on', 'turn_off'].includes(action))))
+        throw new Error(power === undefined ? 'HA_INVALID_MIOT_LIGHT' : 'HA_INVALID_MIOT_POWER');
+      devices.add(miot_did);
+      const register = (siid, piid, field) => {
+        const key = `${miot_did}/${siid}/${piid}`;
+        if (properties.has(key)) throw new Error('HA_DUPLICATE_MIOT_PROPERTY');
+        properties.set(key, {id, field});
+      };
+      if (power) register(power.siid, power.piid, 'power');
+      else for (const [piid, field] of Object.entries(fields)) register(2, piid, field);
+    }
+    return {entities, devices, properties};
+  }
+
+  updateEnrollment(next) {
+    const changed = this.properties?.size !== next.properties.size;
+    Object.assign(this, next);
+    if (changed && this.child) {
+      this.reset('miot_catalog_updated');
+      this.child.kill();
+    }
   }
 
   async command(id, args, signal) {
@@ -186,6 +201,17 @@ export class MiotLAN extends EventEmitter {
   }
 
   message(message, child) {
+    if (message.source === 'local-mips' && message.phase === 'inventory' && Array.isArray(message.devices)
+      && message.devices.length <= 1024 && message.devices.every(row => did(row.did)
+        && ['name', 'model', 'urn', 'roomId', 'roomName'].every(key => typeof row[key] === 'string') && typeof row.online === 'boolean')) {
+      this.discovery = {devices: message.devices, updated_at: new Date().toISOString(), error: null};
+      this.emit('inventory');
+      return;
+    }
+    if (message.source === 'local-mips' && message.phase === 'inventory-error') {
+      this.discovery.error = 'HA_MIOT_INVENTORY_UNAVAILABLE';
+      return;
+    }
     if (message.phase === 'subscribed' && message.source === 'local-mips') {
       void this.seed(child);
       return;
@@ -219,13 +245,19 @@ export class MiotLAN extends EventEmitter {
 
   async supervise() {
     const {watch_binary, gateway_path, identity_path} = this.config;
-    const args = ['-gateway', gateway_path, '-identity', identity_path, '-device', [...this.devices].join(','),
-      '-kind', 'property', '-duration', '0'];
     let backoff = 250;
     while (!this.stop.signal.aborted) {
+      if (!this.devices.size && !this.config.discover) {
+        await delay(250, undefined, {signal: this.stop.signal}).catch(() => {});
+        continue;
+      }
       const generation = this.health.generation;
+      const args = ['-gateway', gateway_path, '-identity', identity_path, '-device', [...this.devices].join(','),
+        '-kind', 'property', '-duration', '0'];
+      if (this.config.discover) args.push('-inventory');
       const child = this.child = spawn(watch_binary, args, {stdio: ['ignore', 'pipe', 'ignore']});
       child.on('error', () => { this.health.last_error = 'HA_MIOT_WATCH_START_FAILED'; });
+      const maxLine = this.config.discover ? 2 * 1024 * 1024 : 65536;
       let pending = '', failed = false;
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', chunk => {
@@ -233,9 +265,9 @@ export class MiotLAN extends EventEmitter {
         try {
           const lines = (pending + chunk).split('\n');
           pending = lines.pop();
-          if (pending.length > 65536) throw new Error('watch line exceeds limit');
+          if (pending.length > maxLine) throw new Error('watch line exceeds limit');
           for (const line of lines) {
-            if (line.length > 65536) throw new Error('watch line exceeds limit');
+            if (line.length > maxLine) throw new Error('watch line exceeds limit');
             this.message(JSON.parse(line), child);
           }
         } catch {
@@ -247,6 +279,7 @@ export class MiotLAN extends EventEmitter {
       });
       await new Promise(resolve => child.once('close', resolve));
       this.child = null;
+      if (this.config.discover) this.discovery.error = 'HA_MIOT_WATCH_DISCONNECTED';
       this.reset(this.stop.signal.aborted ? null : 'miot_watch_disconnected');
       if (this.stop.signal.aborted) break;
       this.health.last_error ??= 'HA_MIOT_WATCH_DISCONNECTED';

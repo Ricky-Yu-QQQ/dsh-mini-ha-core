@@ -1,7 +1,10 @@
 /** Declarative JSON rules. Device/event content is data; no eval or arbitrary URLs. */
 export const ID = /^[a-z_]+\.[a-z0-9_]+$/;
 const NAME = /^[a-z][a-z0-9_.-]{0,79}$/;
-export const ACTIONS = ['turn_on', 'turn_off', 'set_brightness', 'set_color_temperature'];
+export const POWER_DOMAINS = ['light', 'switch', 'fan', 'climate', 'input_boolean'];
+export const POWER_ACTIONS = ['turn_on', 'turn_off'];
+export const VENDOR_ACTIONS = {vacuum: ['start', 'pause', 'return_to_base'], washer: ['select_program']};
+export const ACTIONS = [...POWER_ACTIONS, 'set_brightness', 'set_color_temperature', ...Object.values(VENDOR_ACTIONS).flat()];
 const scalar = value => value === null || ['string', 'boolean'].includes(typeof value) || Number.isFinite(value);
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
 const only = (value, keys) => {
@@ -21,6 +24,10 @@ export function validateSettings(settings) {
   for (const entry of settings.entities) {
     if (typeof entry.entity_id !== 'string' || !ID.test(entry.entity_id) || entry.local_verified !== true || entities.has(entry.entity_id))
       throw new Error('HA_INVALID_ENROLLMENT');
+    if ((entry.area !== undefined && !text(entry.area, 80)) ||
+        ['aliases','zones'].some(key => entry[key] !== undefined &&
+          (!Array.isArray(entry[key]) || entry[key].length > 16 || entry[key].some(value => !text(value, 80)))))
+      throw new Error('HA_INVALID_LOCATION');
     if (entry.actions && (!Array.isArray(entry.actions) || entry.actions.some(action => ![...ACTIONS, 'run'].includes(action))))
       throw new Error('HA_INVALID_ALLOWED_ACTION');
     entities.set(entry.entity_id, structuredClone(entry));
@@ -41,10 +48,18 @@ export function enrolled(entities, id, action) {
 
 export function validateOperation(operation, entities) {
   only(operation, ['entity_id', 'action', 'value']);
-  enrolled(entities, operation.entity_id, operation.action);
+  const entity = enrolled(entities, operation.entity_id, operation.action);
   if (!ACTIONS.includes(operation.action)) throw new Error('HA_ACTION_DENIED');
   const domain = operation.entity_id.split('.')[0];
-  if (!['light', 'switch', 'fan', 'climate', 'input_boolean'].includes(domain)) throw new Error('HA_CONTROL_DOMAIN_DENIED');
+  if (entity.source === 'vendor' && VENDOR_ACTIONS[domain]?.includes(operation.action)) {
+    if (operation.action === 'select_program') {
+      only(operation.value, ['drum', 'program']);
+      if (![1, 2].includes(operation.value.drum) || !text(operation.value.program, 80)) throw new Error('HA_INVALID_PROGRAM');
+    } else if (operation.value !== undefined) throw new Error('HA_UNEXPECTED_VALUE');
+    return operation;
+  }
+  if (!POWER_DOMAINS.includes(domain) || Object.values(VENDOR_ACTIONS).some(actions => actions.includes(operation.action)))
+    throw new Error('HA_CONTROL_DOMAIN_DENIED');
   if (operation.action.startsWith('set_')) {
     if (domain !== 'light' || !Number.isFinite(operation.value)) throw new Error('HA_INVALID_LIGHT_VALUE');
     if (operation.action === 'set_brightness' && (operation.value < 0 || operation.value > 100)) throw new Error('HA_BRIGHTNESS_RANGE');

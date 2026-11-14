@@ -11,9 +11,9 @@ import (
 	"dsh-mini-ha-core/internal/mipsidentity"
 )
 
-func watchWithRenewal(ctx context.Context, g gateway, path string, devices []string, kind string) error {
+func watchWithRenewal(ctx context.Context, g gateway, path string, devices []string, kind string, inventory bool) error {
 	return withRenewal(ctx, path, func(id mipsidentity.Identity, renewed <-chan struct{}) error {
-		return watch(ctx, g, id, devices, kind, renewed)
+		return watch(ctx, g, id, devices, kind, renewed, inventory)
 	})
 }
 

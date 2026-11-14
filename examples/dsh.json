@@ -2,6 +2,7 @@
   "ha_backend": "miot_lan",
   "state": "/absolute/workspace/.local/dsh-state",
   "miot_lan": {
+    "discover": true,
     "control_binary": "/absolute/workspace/bin/miot-control",
     "watch_binary": "/absolute/workspace/bin/mips-watch",
     "gateway_path": "/absolute/workspace/.local/gateway.json",

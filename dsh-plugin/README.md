@@ -28,8 +28,8 @@ subscriber has connected and the plugin has read its initial state, the
 
 The local backend subscribes with one gateway identity and accepts up to 32
 enrolled entities. `local_verified` enables reading. `control_allowed` and
-`actions` determine which writes are available. To enroll a boolean light or
-switch channel, add `"miot_power": {"siid": 3, "piid": 1}` using the verified
+`actions` determine which writes are available. To enroll a boolean light,
+switch, fan or climate channel, add `"miot_power": {"siid": 3, "piid": 1}` using the verified
 property IDs. Its private configuration uses `device` and `power` as
 described in the [repository README](../README.md).
 
@@ -37,10 +37,55 @@ Use [simulated.example.json](simulated.example.json) to try the tools with
 in-process devices. [settings.example.json](settings.example.json) is for an
 installation that connects to a separate Home Assistant server.
 
+## Standalone adapters and device updates
+
+Set `ha_backend: "mixed"` and configure any combination of standalone
+adapters. Put the gateway settings under `adapters.miot_lan`.
+For the existing Nomi appliance bridge, set `adapters.vendor` to
+`{"endpoint":"http://127.0.0.1:8315","config_path":"/absolute/.local/vendor.private.json"}`.
+The bridge keeps the previously authorized Haier and Dreame sessions.
+Enroll its washer as `source: "vendor", vendor: "haier"` with domain
+`washer`, and its vacuum as `source: "vendor", vendor: "dreame"` with
+domain `vacuum`. The adapter reads the bridge reports and forwards
+state changes to Core automations. Allow the washer's `select_program`
+or the vacuum's `start`, `pause` and `return_to_base` per entity.
+The washer's selector takes a drum number and a program ID from state.
+
+The optional `adapters.live` connects to an existing Home Assistant for
+legacy installations. Standalone installations use the Xiaomi and vendor
+adapters on their own. Each stable `entity_id` has one adapter owner.
+
+Set `discover: true` in the Xiaomi adapter and build the current
+`mips-watch`. On connection it reads the authorized local gateway's
+inventory, refreshes on device-list notification and checks every 30 seconds.
+`ha_discover_devices` reports the device and room names and whether each DID
+has a local binding. Core uses gateway names and rooms when the enrollment
+omits them. Explicit zone labels such as `沙发侧` come from the enrollment.
+
+An optional absolute `catalog_path` under `.local` points to an owner-only
+JSON file containing `{"entities":[]}`. Publish changes by writing a new
+0600 file and renaming it into place. The file is the cumulative overlay:
+entries can add devices or override metadata of a base entity. Include each
+previously added entity on subsequent writes. Core checks for file changes
+once a second. Adding a Xiaomi device resubscribes the Xiaomi watcher and
+seeds its baseline again. An invalid update leaves the last accepted catalog
+in memory and exposes `catalog_error` through `ha_status`.
+
+To enable control and event subscription for a newly discovered Xiaomi
+device, add its verified DID and local property binding to the catalog.
+An existing binding keeps its entity ID and transport mapping during a reload.
+
+Use `ha_control_group` with `device_type`, `action` and `area` or `zone`.
+For example, `{"area":"卧室","device_type":"light","action":"turn_on"}`.
+Core resolves the targets once and writes the group receipt plus individual
+receipts to SQLite. If a zone occurs in several rooms, specify a room.
+`ha_control_lights` remains available to existing callers.
+
 ## Device tools
 
 - `ha_search` and `ha_get_state` find and read enrolled entities.
-- `ha_control` sets power, light brightness, or light color temperature. Use
+- `ha_control` runs enrolled device actions, including power, light settings,
+  and the supported vendor commands. Use
   the exact entity ID returned by discovery. `confirmed` requires readback.
 - `ha_control_receipt` looks up the stored result by `operation_id`.
 - If configured, `ha_configure_light` sets light brightness or color temperature

@@ -184,7 +184,7 @@ func connectWithReports(ctx context.Context, socket net.Conn, id string, devices
 
 var errIdentityRenewed = errors.New("MIPS identity renewed")
 
-func watch(ctx context.Context, g gateway, id mipsidentity.Identity, devices []string, kind string, renewed <-chan struct{}) error {
+func watch(ctx context.Context, g gateway, id mipsidentity.Identity, devices []string, kind string, renewed <-chan struct{}, inventory bool) error {
 	config, err := verifiedTLS(g, id)
 	if err != nil {
 		return err
@@ -197,11 +197,38 @@ func watch(ctx context.Context, g gateway, id mipsidentity.Identity, devices []s
 		return fmt.Errorf("local TLS: %w", err)
 	}
 	defer socket.Close()
-	client, messages, err := connect(setup, socket, id.VirtualDID, devices, kind)
+	reports := make(chan *paho.Publish, 256)
+	changed := make(chan struct{}, 1)
+	client, messages, err := connectWithReports(setup, socket, id.VirtualDID, devices, kind, func(packet *paho.Publish) bool {
+		if inventory && packet.Topic == id.VirtualDID+"/reply" {
+			return false
+		}
+		if inventory && packet.Topic == id.VirtualDID+"/appMsg/devListChange" {
+			if !packet.Retain {
+				select {
+				case changed <- struct{}{}:
+				default:
+				}
+			}
+			return true
+		}
+		select {
+		case reports <- packet:
+		default:
+			_ = socket.Close()
+		}
+		return true
+	})
 	if err != nil {
 		return err
 	}
 	defer client.Disconnect(&paho.Disconnect{})
+	if inventory {
+		// Periodic reads also work on firmware that does not allow the change subscription.
+		_, _ = client.Subscribe(setup, &paho.Subscribe{Subscriptions: []paho.SubscribeOptions{
+			{Topic: "master/appMsg/devListChange", QoS: 2},
+		}})
+	}
 	cancel()
 	out := json.NewEncoder(os.Stdout)
 	if err := out.Encode(map[string]any{"phase": "subscribed", "at": time.Now(), "source": "local-mips"}); err != nil {
@@ -210,6 +237,19 @@ func watch(ctx context.Context, g gateway, id mipsidentity.Identity, devices []s
 	allowed := make(map[string]bool, len(devices))
 	for _, device := range devices {
 		allowed[device] = true
+	}
+	if inventory {
+		scan, err := newInventoryClient(client, messages, id.VirtualDID)
+		if err != nil {
+			return err
+		}
+		watchCtx, stop := context.WithCancel(ctx)
+		done := make(chan struct{})
+		defer func() { stop(); <-done }()
+		go func() {
+			defer close(done)
+			reportInventory(watchCtx, scan, os.Stdout, changed)
+		}()
 	}
 	for {
 		select {
@@ -222,7 +262,7 @@ func watch(ctx context.Context, g gateway, id mipsidentity.Identity, devices []s
 			return errIdentityRenewed
 		case <-client.Done():
 			return errors.New("gateway MQTT disconnected")
-		case packet := <-messages:
+		case packet := <-reports:
 			if packet.Retain {
 				continue
 			}
@@ -272,12 +312,16 @@ func run() error {
 	identityPath := flag.String("identity", "", "private JSON from mips-enroll")
 	device := flag.String("device", "", "comma-separated MIoT device DIDs to watch")
 	kind := flag.String("kind", "event", "event or property")
+	inventory := flag.Bool("inventory", false, "refresh the authorized gateway inventory every 30 seconds")
 	duration := flag.Duration("duration", 5*time.Minute, "maximum observation window (0 runs until interrupted)")
 	flag.Parse()
 	if *gatewayPath == "" || *identityPath == "" || *duration < 0 {
 		return errors.New("provide -gateway, -identity and a valid -device")
 	}
 	devices := strings.Split(*device, ",")
+	if *inventory && *device == "" {
+		devices = nil
+	}
 	if len(devices) > 256 {
 		return errors.New("too many device subscriptions")
 	}
@@ -311,7 +355,7 @@ func run() error {
 		ctx, cancel = context.WithTimeout(ctx, *duration)
 		defer cancel()
 	}
-	return watchWithRenewal(ctx, g, *identityPath, devices, *kind)
+	return watchWithRenewal(ctx, g, *identityPath, devices, *kind, *inventory)
 }
 
 func main() {

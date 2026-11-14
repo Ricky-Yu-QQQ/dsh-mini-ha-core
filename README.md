@@ -1,9 +1,11 @@
 # DSH Mini HA Core
 
-Mini HA Core reads Xiaomi device events, controls enrolled devices, and
-runs persistent local automations. The DeepSeek Harness plugin exposes these
-capabilities as tools. An agent can author rules, then the Core matches events,
-evaluates conditions, runs device actions, and records their readbacks.
+Mini HA Core discovers devices on the authorized Xiaomi gateway, handles
+enrolled devices and events, and runs persistent local automations. It can
+also use the Nomi direct appliance bridge for Haier and Dreame devices.
+The DeepSeek Harness plugin exposes Core as tools. An agent can author
+rules, then Core matches events, evaluates conditions, runs device actions,
+and records their readbacks.
 
 | Directory | Purpose |
 | --- | --- |
@@ -13,8 +15,8 @@ evaluates conditions, runs device actions, and records their readbacks.
 | [examples](examples) | Configuration templates with placeholder values |
 
 The local backend supports enrolled lights with MIoT service 2 power,
-brightness, and color temperature. Individual light or switch channels can
-register a verified boolean power property. Control uses local miIO and
+brightness, and color temperature. Light, switch, fan and air conditioner
+channels can register a verified boolean power property. Control uses local miIO and
 property notifications use MIPS MQTT. Certificate enrollment and renewal
 use Xiaomi's authorization service. The local backend runs without a Home
 Assistant server.
