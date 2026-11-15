@@ -11,12 +11,14 @@
     ".": "./index.js",
     "./core": "./core/index.js",
     "./cameras": "./core/cameras.js",
+    "./vacuum-progress": "./core/vacuum-progress.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "*.js",
     "core/*.js",
+    "core/vacuum_progress.py",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
