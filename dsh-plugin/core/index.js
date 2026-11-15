@@ -1,3 +1,4 @@
+import {NomiLocal} from './nomi-local.js';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import {constants, watchFile, unwatchFile} from 'node:fs';
@@ -25,7 +26,7 @@ const rejectedControls = new Set([
 export class HomeCore {
   constructor(settings, {agent} = {}) {
     const backend = settings.ha_backend ?? 'live';
-    if (!['live', 'simulated', 'miot_lan', 'mixed'].includes(backend)) throw new Error('HA_INVALID_BACKEND');
+    if (!['live', 'simulated', 'miot_lan', 'mixed', 'nomi_local'].includes(backend)) throw new Error('HA_INVALID_BACKEND');
     if (backend === 'live' && (!path.isAbsolute(settings.credentials_path ?? '') || !settings.credentials_path.split(path.sep).includes('.local')))
       throw new Error('HA_PRIVATE_CREDENTIAL_PATH_REQUIRED');
     for (const [key, low, high] of [['max_queue', 1, 1024], ['request_timeout_ms', 100, 60000],
@@ -60,6 +61,9 @@ export class HomeCore {
       if (config.vendor) sources.vendor = new VendorDevices(config.vendor, this.publicEntities);
       if (!Object.keys(sources).length) throw new Error('HA_INVALID_ADAPTERS');
       this.client = new MixedDevices(sources, this.publicEntities);
+    } else if (backend === 'nomi_local') {
+      if (settings.native_automations || settings.agent || this.catalogFile) throw new Error('HA_INVALID_NOMI_SETTINGS');
+      this.client = new NomiLocal(settings.nomi_local, this.baseEntities);
     } else {
       this.client = backend === 'miot_lan' ? new MiotLAN(settings, this.baseEntities)
         : backend === 'simulated' ? new SimulatedHA(settings) : new HAClient(settings);

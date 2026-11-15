@@ -74,7 +74,7 @@ export function registerTools(ctx, service, {management = true} = {}) {
       {area: {type: 'string'}, zone: {type: 'string'}, action: {...string('Power action'), enum: ['turn_on', 'turn_off']}},
       (args, exec) => service.core.controlLights(args, options(exec))],
   );
-  if (!['miot_lan', 'mixed'].includes(service.settings.ha_backend)) specs.push(
+  if (!['miot_lan', 'mixed', 'nomi_local'].includes(service.settings.ha_backend)) specs.push(
     ['ha_run_logic', 'Run an enrolled HA script, scene or automation. accepted records the external service acknowledgement.',
       {entity_id: entity}, (args, exec) => service.core.runLogic(args.entity_id, options(exec))],
   );
