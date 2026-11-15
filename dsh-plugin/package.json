@@ -10,6 +10,7 @@
   "exports": {
     ".": "./index.js",
     "./core": "./core/index.js",
+    "./cameras": "./core/cameras.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },

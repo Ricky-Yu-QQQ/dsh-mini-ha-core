@@ -1,0 +1,6 @@
+{
+  "go2rtc": "http://127.0.0.1:1984",
+  "cameras": [
+    {"id": "elevator-hall", "name": "电梯厅摄像头", "room": "电梯厅"}
+  ]
+}

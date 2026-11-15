@@ -79,6 +79,31 @@ For power properties exposed only through the local MIPS proxy, use
 JSON paths. It uses the same pinned TLS and exclusive identity lock as the
 watcher. A write is sent once and verified by a fresh property read.
 
+## Camera streams
+
+The optional `dsh-plugin/cameras` entry point exposes an allowlisted
+camera catalog and on-demand live frames to the embedding host. Copy
+[examples/cameras.json](examples/cameras.json) into an owner-only 0600
+file under `.local`. Set a camera's `source` to its enrolled stream name
+in a standalone go2rtc instance. Omit `source` until a feed is enrolled.
+
+Bind go2rtc's API and optional RTSP listener to loopback. Core reads
+`/api/stream.mjpeg`; the named source must offer a JPEG track. Where
+the upstream video is H.264 or HEVC, add a dedicated go2rtc stream
+such as `ffmpeg:enrolled-camera#video=mjpeg#width=640`. Keep vendor
+authentication and source URLs on the go2rtc side. The host authenticates
+the viewer before calling Core. Each stream closes with its viewer and
+forwards bounded JPEG frames without recording them.
+
+For Xiaomi's password-free enrollment, start the loopback login page with
+`python3 scripts/xiaomi-camera-login.py /absolute/.local/private/xiaomi-account.json`.
+The output directory needs mode `0700`. Visit `http://127.0.0.1:19842/` and scan
+the Xiaomi account QR code. Add the generated private file to the standalone
+relay's startup arguments after its normal config
+(`go2rtc -config /path/to/go2rtc.yaml -config /absolute/.local/private/xiaomi-account.json`).
+The relay can then list cameras from the authorized account. Confirm playback
+of the enrolled model before configuring its source in Core.
+
 ## Benchmark
 
 `node scripts/benchmark-rules.mjs` measures indexed matching and the local
